@@ -1,9 +1,5 @@
 # Tasks
 
-## Outstanding
-
-- [ ] **Set up repo on GitHub** — Create a remote repository on GitHub and push the local repo.
-
 ## Colleague's Findings — Investigate & Potentially Implement
 
 These items come from additional Locoscript 2 research and are not currently handled by the parser. Each needs investigation against real sample files before implementing.
@@ -26,6 +22,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Completed
 
+- [x] **Set up repo on GitHub** — Remote repository created at github.com/MrTimLee/locoscript_convertor. GitHub CLI (`gh`) authenticated for raising PRs.
 - [x] **`08 05 01 XX XX` doubled-pair artefacts** — Fixed in branch `fix/paragraph-indent-artefacts`. Added `PARA_INDENT` handler consuming all 5 bytes. Golden fixture regenerated. 23/23 tests passing.
 - [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — Implemented in branch `feature/batch-overwrite-all`. Custom 4-button dialog (Yes / No / Yes to All / Skip All); batch buttons only shown for multi-file conversions. Policy state reset on each new run. 23/23 tests passing.
 - [x] **Show time taken in completion message** — Implemented in branch `feature/completion-time`. Elapsed time recorded with `time.monotonic()` and shown in both the summary dialog and status bar. 23/23 tests passing.
