@@ -4,7 +4,7 @@
 
 These items come from additional Locoscript 2 research and are not currently handled by the parser. Each needs investigation against real sample files before implementing.
 
-- [ ] **`0x05` (ENQ) — extended character encoding** — Colleague documents multi-byte sequences encoding non-ASCII characters (e.g. `05 63 01 13 01` = ç). Requirements.md incorrectly states there is no multi-byte extended character encoding. Currently the parser would misparse these sequences — the `13` byte inside an ENQ sequence could incorrectly trigger paragraph/italic handlers. Investigate and implement correct handling.
+- [x] **`0x05` (ENQ) — extended character encoding** — Implemented in branch `feature/enq-extended-characters`. Added `_ENQ_CHAR_MAP` and 5-byte handler (`05 base 01 diacritic 01`). Maps `(0x63, 0x13)` → ç (confirmed in "façade", "Français"). Trailing doubled-pair indent consumed to prevent 'FF'/'DD' artifacts. Requirements.md updated. 38/38 tests passing.
 
 - [ ] **"JOY" magic word** — Colleague notes `JOY` as a valid alternative file header magic (vs. `DOC`). Currently any non-`DOC` file throws a `ParseError`. Investigate what `JOY` files represent and handle appropriately (either support or reject with a clearer error).
 
