@@ -169,6 +169,12 @@ def _skip_ctrl_sequence(data: bytes, i: int) -> int:
 
 def parse(data: bytes) -> Document:
     """Parse raw Locoscript 2 file bytes into a Document."""
+    if data[:3] == b'JOY':
+        raise ParseError(
+            "JOY format files are not currently supported. "
+            "This file uses the Locoscript 2 'JOY' document type, which has a "
+            "different binary structure from 'DOC' files and requires a separate parser."
+        )
     if data[:3] != MAGIC:
         raise ParseError("Not a valid Locoscript 2 file (missing DOC header)")
 
