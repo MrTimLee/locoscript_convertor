@@ -10,7 +10,7 @@
 
 ## Bug Fixes
 
-- [ ] **`08 05 01 XX XX` doubled-pair artefacts** — Paragraph indent marker is not handled as a unit. The parser currently skips `08`, `05`, `01` individually, then outputs `XX XX` as literal text when `XX` is a printable character (e.g. `%%`, `::`, `QQ`). Affects 434 of 443 sample files. Fix: add a handler that consumes all 5 bytes and emits nothing, mirroring the existing `TAB_SEQ` (`09 05 01`) handler.
+- [x] **`08 05 01 XX XX` doubled-pair artefacts** — Paragraph indent marker is not handled as a unit. The parser currently skips `08`, `05`, `01` individually, then outputs `XX XX` as literal text when `XX` is a printable character (e.g. `%%`, `::`, `QQ`). Affects 434 of 443 sample files. Fix: add a handler that consumes all 5 bytes and emits nothing, mirroring the existing `TAB_SEQ` (`09 05 01`) handler.
 
 ## Colleague's Findings — Investigate & Potentially Implement
 
@@ -40,3 +40,4 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Completed
 
+- [x] **`08 05 01 XX XX` doubled-pair artefacts** — Fixed in branch `fix/paragraph-indent-artefacts`. Added `PARA_INDENT` handler consuming all 5 bytes. Golden fixture regenerated. 23/23 tests passing.
