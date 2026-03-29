@@ -96,6 +96,8 @@ Body text is stored as raw bytes in the range `0x20–0x7E` (printable ASCII). C
 |------|---------|-----------|
 | `E9` | U+00A3  | `£` (pound sign) |
 
+Extended characters that require more than one byte are encoded using the ENQ sequence described below.
+
 ## Control Codes and Sequences
 
 ### Word Separator — `02`
@@ -112,6 +114,25 @@ Three-byte sequence. If italic is currently active it acts as "italic off" (end 
 
 ### Tab / Citation Indent — `09 05 01` + 2 param bytes
 Five bytes total. Emits a tab character (`\t`) in the output. The two trailing bytes are indent parameters and are consumed but not output.
+
+### ENQ Extended Character — `05 base 01 diacritic 01`
+A five-byte sequence encoding an accented or extended character:
+
+```
+05  base_char  01  diacritic_code  01
+```
+
+- `base_char` is the ASCII base letter (`0x21`–`0x7E`).
+- `diacritic_code` is a small control byte identifying the accent type.
+- The sequence may be followed by an optional structural doubled-pair indent marker (`01 XX XX` where `XX == XX` and `XX >= 0x20`); these three bytes are consumed and not output.
+
+Known `(base_char, diacritic_code)` → character mappings confirmed in real sample files:
+
+| Base | Diacritic | Unicode | Character |
+|------|-----------|---------|-----------|
+| `63` ('c') | `13` | U+00E7 | `ç` (e.g. "façade", "Français") |
+
+For unrecognised combinations the base character is emitted as a best-effort fallback.
 
 ### Inline Formatting — `08 XX` (on) / `09 XX` (off)
 Two-byte sequences that toggle inline character formatting. The second byte identifies the format type:

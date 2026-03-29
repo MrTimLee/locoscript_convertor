@@ -27,6 +27,13 @@ _FMT_TYPES = {0x00: 'bold', 0x02: 'underline', 0x06: 'superscript', 0x07: 'subsc
 # in the header transition zone — jump past it to find the real content start.
 _C40E_BLOCK = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e])
 
+# ENQ extended character encoding: 05 base 01 diacritic 01
+# Maps (base_byte, diacritic_byte) → Unicode character.
+# Only combinations confirmed in real sample files are listed.
+_ENQ_CHAR_MAP: dict[tuple[int, int], str] = {
+    (0x63, 0x13): 'ç',   # c + cedilla  (e.g. "façade", "Français")
+}
+
 
 class ParseError(Exception):
     pass
@@ -347,6 +354,24 @@ def parse(data: bytes) -> Document:
             next_sep = i+1 < n and data[i+1] in (WORD_SEP, 0x06)
             current_text.append(' ' if (prev_sep or next_sep or not prev_printable) else '-')
             i += 1
+            continue
+
+        # --- ENQ extended character: 05 base 01 diacritic 01 ---
+        # Five-byte sequence encoding an accented or extended character.
+        # The base byte is a printable ASCII char; the diacritic byte is a
+        # small control code identifying the accent.  Some occurrences are
+        # followed by a structural doubled-pair indent marker (01 XX XX)
+        # which must also be consumed to prevent printable-pair artefacts.
+        if (data[i] == 0x05 and i + 4 < n
+                and data[i + 2] == 0x01 and data[i + 4] == 0x01
+                and 0x21 <= data[i + 1] <= 0x7E):
+            base = data[i + 1]
+            diacritic = data[i + 3]
+            current_text.append(_ENQ_CHAR_MAP.get((base, diacritic), chr(base)))
+            i += 5
+            # Consume optional trailing structural doubled-pair: 01 XX XX
+            if i + 2 < n and data[i] == 0x01 and data[i + 1] == data[i + 2] and data[i + 1] >= 0x20:
+                i += 3
             continue
 
         # --- Extended character mappings ---

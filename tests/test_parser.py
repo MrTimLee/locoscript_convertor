@@ -351,6 +351,44 @@ class TestExtendedCharacters(unittest.TestCase):
         self.assertNotIn('?', text)
 
 
+class TestENQExtendedCharacters(unittest.TestCase):
+
+    def test_cedilla_c_maps_to_c_cedilla(self):
+        # 05 63 01 13 01 is the ENQ encoding for ç (c with cedilla)
+        data = _doc(b'fa\x05\x63\x01\x13\x01ade')
+        text = _plain(data)
+        self.assertIn('ç', text)
+        self.assertIn('façade', text)
+
+    def test_cedilla_no_base_char_artifact(self):
+        # The raw 'c' byte (0x63) must not appear as a separate artifact
+        data = _doc(b'Fran\x05\x63\x01\x13\x01ais')
+        text = _plain(data)
+        self.assertIn('ç', text)
+        self.assertNotIn('Franc', text)  # 'c' must not leak before 'ais'
+
+    def test_cedilla_trailing_doubled_pair_consumed(self):
+        # 05 63 01 13 01 followed by 01 XX XX — the doubled pair must not appear
+        data = _doc(b'fa\x05\x63\x01\x13\x01\x01\x46\x46ade')
+        text = _plain(data)
+        self.assertIn('ç', text)
+        self.assertNotIn('FF', text)
+
+    def test_enq_unknown_diacritic_emits_base_char(self):
+        # An ENQ sequence with an unknown diacritic emits the base character (0x68 = 'h')
+        # rather than '?' or nothing — best-effort fallback for undocumented diacritics
+        data = _doc(b'wit\x05\x68\x01\x07\x01out')
+        text = _plain(data)
+        self.assertIn('h', text)   # base char emitted
+        self.assertIn('without', text)
+
+    def test_enq_does_not_misfire_on_structural_bytes(self):
+        # 05 with a non-printable base byte must not be treated as ENQ char encoding
+        data = _doc(b'After\x05\x00\x01\x13\x01text')
+        text = _plain(data)
+        self.assertIn('text', text)
+
+
 class TestControlSequenceSkip(unittest.TestCase):
 
     def test_unknown_ctrl_type_skipped_cleanly(self):
