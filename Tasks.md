@@ -4,23 +4,11 @@
 
 - [ ] **Set up repo on GitHub** — Create a remote repository on GitHub and push the local repo.
 
-- [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — The overwrite prompt currently asks yes/no for each file individually. Batch mode should also offer "Skip ALL" and "Yes to ALL" options. The README already describes this feature as implemented — update it once the feature is done.
-
-- [x] **Show time taken in completion message** — The success/summary dialog shows file counts but not elapsed time. The requirements specify the time taken should be included.
-
-## Bug Fixes
-
-- [x] **`08 05 01 XX XX` doubled-pair artefacts** — Paragraph indent marker is not handled as a unit. The parser currently skips `08`, `05`, `01` individually, then outputs `XX XX` as literal text when `XX` is a printable character (e.g. `%%`, `::`, `QQ`). Affects 434 of 443 sample files. Fix: add a handler that consumes all 5 bytes and emits nothing, mirroring the existing `TAB_SEQ` (`09 05 01`) handler.
-
 ## Colleague's Findings — Investigate & Potentially Implement
 
 These items come from additional Locoscript 2 research and are not currently handled by the parser. Each needs investigation against real sample files before implementing.
 
 - [ ] **`0x05` (ENQ) — extended character encoding** — Colleague documents multi-byte sequences encoding non-ASCII characters (e.g. `05 63 01 13 01` = ç). Requirements.md incorrectly states there is no multi-byte extended character encoding. Currently the parser would misparse these sequences — the `13` byte inside an ENQ sequence could incorrectly trigger paragraph/italic handlers. Investigate and implement correct handling.
-
-- [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
-
-- [ ] **`0x0F` (SI) sequences — line/paragraph structure** — Colleague documents `SI` as carrying line and paragraph signals based on its second byte (`SI 01` = soft new line, `SI 02` = new paragraph, `SI 04` = horizontal tab, `SI 05` = hanging indent). Currently silently skipped by the parser. Investigate whether these appear in our sample files and implement if confirmed.
 
 - [ ] **"JOY" magic word** — Colleague notes `JOY` as a valid alternative file header magic (vs. `DOC`). Currently any non-`DOC` file throws a `ParseError`. Investigate what `JOY` files represent and handle appropriately (either support or reject with a clearer error).
 
@@ -30,8 +18,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Known Limitations (future work)
 
-- [x] **First paragraph junk** — Implemented in branch `fix/first-paragraph-header-junk`. `_find_content_start` now iterates through `22 61 0b c4 0e` structural header blocks, skipping across section breaks to land on the first real content paragraph. Improved 185/443 sample files, 0 regressions. 23/23 tests passing.
-- [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
+- [ ] **Tab handling in converter output** — The parser correctly emits `\t` for `0f 04` tab sequences, but all three converters call `.strip()` on run/paragraph text, which drops leading/trailing tabs. RTF output also passes `\t` as a raw character rather than the `\tab` control word. DOCX strips tabs from run text entirely. Improve converter fidelity for tab characters in TXT, RTF, and DOCX output.
 
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 
@@ -45,3 +32,5 @@ These items come from additional Locoscript 2 research and are not currently han
 - [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — Implemented in branch `feature/batch-overwrite-all`. Custom 4-button dialog (Yes / No / Yes to All / Skip All); batch buttons only shown for multi-file conversions. Policy state reset on each new run. 23/23 tests passing.
 - [x] **Show time taken in completion message** — Implemented in branch `feature/completion-time`. Elapsed time recorded with `time.monotonic()` and shown in both the summary dialog and status bar. 23/23 tests passing.
 - [x] **First paragraph junk** — Implemented in branch `fix/first-paragraph-header-junk`. `_find_content_start` now iterates through `22 61 0b c4 0e` structural header blocks, skipping across section breaks to land on the first real content paragraph. Improved 185/443 sample files, 0 regressions. 23/23 tests passing.
+- [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
+- [x] **`0x0F` (SI) sequences — line/paragraph structure** — Implemented in branch `feature/si-sequences`. `0f 04` (tab) and `0f 05` (hanging indent) had printable param bytes leaking as artefacts. Added handlers consuming params and emitting `\t` for `0f 04`. 27/27 tests passing.

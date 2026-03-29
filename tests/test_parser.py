@@ -191,6 +191,35 @@ class TestTabSequence(unittest.TestCase):
         self.assertIn('Col2', text)
 
 
+class TestSISequences(unittest.TestCase):
+
+    def test_0f_04_emits_tab_and_strips_params(self):
+        # 0f 04 [printable param bytes] 01 [doubled pair] → tab, no artefacts
+        # Mirrors the real-world case: 0f 04 31 61 01 2a 2a (seen as "1a**" artefacts)
+        data = _doc(b'Before\x0f\x04\x31\x61\x01\x2a\x2aAfter')
+        text = _plain(data)
+        self.assertIn('\t', text)
+        self.assertIn('Before', text)
+        self.assertIn('After', text)
+        self.assertNotIn('1a', text)
+        self.assertNotIn('**', text)
+
+    def test_0f_04_no_separator_no_doubled_pair(self):
+        # 0f 04 [2 printable param bytes] immediately followed by content (no 01 separator)
+        data = _doc(b'Col1\x0f\x04\x27\x66Col2')
+        text = _plain(data)
+        self.assertIn('\t', text)
+        self.assertNotIn("'f", text)
+
+    def test_0f_05_emits_nothing_and_strips_params(self):
+        # 0f 05 is a hanging-indent marker — no tab emitted, params consumed
+        data = _doc(b'Word\x0f\x05\x31\x61\x01\x3e\x3eContent')
+        text = _plain(data)
+        self.assertNotIn('1a', text)
+        self.assertNotIn('>>', text)
+        self.assertIn('Content', text)
+
+
 class TestIndentMetadata(unittest.TestCase):
 
     def test_09_00_01_skipped(self):
