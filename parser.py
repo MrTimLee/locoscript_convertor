@@ -276,6 +276,12 @@ def parse(data: bytes) -> Document:
             i += 1
             continue
 
+        # --- Extended character mappings ---
+        if data[i] == 0xE9:
+            current_text.append('£')
+            i += 1
+            continue
+
         # --- Printable ASCII ---
         if 0x20 <= data[i] <= 0x7E:
             current_text.append(chr(data[i]))

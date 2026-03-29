@@ -261,6 +261,16 @@ class TestLiteralQuotePrefix(unittest.TestCase):
         self.assertIn('"a', text)
 
 
+class TestExtendedCharacters(unittest.TestCase):
+
+    def test_e9_maps_to_pound_sign(self):
+        # 0xE9 is the Locoscript 2 encoding for the pound sign £
+        data = _doc(b'\xe91.4million')
+        text = _plain(data)
+        self.assertIn('£', text)
+        self.assertNotIn('?', text)
+
+
 class TestControlSequenceSkip(unittest.TestCase):
 
     def test_unknown_ctrl_type_skipped_cleanly(self):

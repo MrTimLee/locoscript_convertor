@@ -18,7 +18,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [ ] **`0x05` (ENQ) — extended character encoding** — Colleague documents multi-byte sequences encoding non-ASCII characters (e.g. `05 63 01 13 01` = ç). Requirements.md incorrectly states there is no multi-byte extended character encoding. Currently the parser would misparse these sequences — the `13` byte inside an ENQ sequence could incorrectly trigger paragraph/italic handlers. Investigate and implement correct handling.
 
-- [ ] **`0xE9` = `£` symbol** — Byte `0xE9` maps to the pound sign. Currently falls outside the `0x20–0x7E` printable range and is silently dropped rather than substituted with `?` or mapped to `£`. Investigate and implement correct mapping.
+- [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
 
 - [ ] **`0x0F` (SI) sequences — line/paragraph structure** — Colleague documents `SI` as carrying line and paragraph signals based on its second byte (`SI 01` = soft new line, `SI 02` = new paragraph, `SI 04` = horizontal tab, `SI 05` = hanging indent). Currently silently skipped by the parser. Investigate whether these appear in our sample files and implement if confirmed.
 
@@ -31,6 +31,7 @@ These items come from additional Locoscript 2 research and are not currently han
 ## Known Limitations (future work)
 
 - [x] **First paragraph junk** — Implemented in branch `fix/first-paragraph-header-junk`. `_find_content_start` now iterates through `22 61 0b c4 0e` structural header blocks, skipping across section breaks to land on the first real content paragraph. Improved 185/443 sample files, 0 regressions. 23/23 tests passing.
+- [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
 
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 
