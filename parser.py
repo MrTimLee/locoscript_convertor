@@ -235,6 +235,34 @@ def parse(data: bytes) -> Document:
             i += 5  # 08 05 01 + 2 indent/param bytes
             continue
 
+        # --- SI tab / hanging-indent sequences: 0f 04 (tab) and 0f 05 (hanging indent) ---
+        # Structure: 0f [04|05]
+        #            [optional leading non-printable param bytes]
+        #            [optional printable tab-stop encoding, up to 2 bytes]
+        #            [optional 01 separator + identical-byte indent pair]
+        #            → content
+        # Without this handler the printable param bytes (e.g. '1a', 'Rf') and any
+        # following doubled pairs (e.g. '**', '>>') leak into the output as artefacts.
+        if data[i] == 0x0f and i+1 < n and data[i+1] in (0x04, 0x05):
+            is_tab = (data[i+1] == 0x04)
+            i += 2
+            # Skip leading non-printable param bytes (same rule as variable ctrl handler)
+            while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
+                i += 1
+            # Skip up to 2 printable tab-stop encoding bytes
+            for _ in range(2):
+                if i < n and 0x20 <= data[i] <= 0x7E:
+                    i += 1
+            # If a 0x01 separator follows, skip it plus any identical-byte indent pair
+            if i < n and data[i] == 0x01:
+                i += 1
+                if i+1 < n and data[i] == data[i+1]:
+                    i += 2
+            if is_tab:
+                flush_run()
+                current_text.append('\t')
+            continue
+
         # --- Indent metadata: 09 00 01 [+ doubled printable pair] ---
         # Variant tab/indent marker that appears as trailing metadata after content.
         if i+2 < n and data[i] == 0x09 and data[i+1] == 0x00 and data[i+2] == 0x01:
