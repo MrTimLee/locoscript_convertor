@@ -8,6 +8,12 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Known Limitations (future work)
 
+- [ ] **High-byte character mappings (0x80–0xFF)** — Locoscript 2 uses the Amstrad CP/M Plus character set, which differs from Latin-1/Unicode for bytes above 0x7F. Currently all unrecognised high bytes are silently skipped. The colleague's document flags `0xC3` → è and `0xB4` → é as known mistranslations. The full mapping table is at https://en.wikipedia.org/wiki/Amstrad_CP/M_Plus_character_set. Implementing this would significantly improve character fidelity across the sample set.
+
+- [ ] **RTF page size** — RTF output does not currently set page dimensions. A4 = 11906 × 16838 twips (from colleague's document). Adding `\paperw11906\paperh16838` and appropriate margin settings would produce correctly-sized RTF output.
+
+- [ ] **Paragraph alignment (centre/right)** — DC1 (`0x11`) and DLE (`0x10`) appear to be centre and right-alignment control sequences respectively (colleague's document, "Control Sequences" section). Not yet decoded or handled by the parser. Investigate against sample files before implementing.
+
 - [ ] **Tab handling in converter output** — The parser correctly emits `\t` for `0f 04` tab sequences, but all three converters call `.strip()` on run/paragraph text, which drops leading/trailing tabs. RTF output also passes `\t` as a raw character rather than the `\tab` control word. DOCX strips tabs from run text entirely. Improve converter fidelity for tab characters in TXT, RTF, and DOCX output.
 
 - [ ] **JOY format parser** — 233 JOY files in the sample set cannot currently be converted. Two sub-versions exist: `01 04` (word sep `0x0a`, para break `07 02 0a 55 0e XX YY 06 ZZ ZZ`) and `01 02` (word sep `0x01`, different structure). Implementing proper support would require a separate parser alongside the existing DOC parser.
