@@ -18,6 +18,10 @@ SECTION_BREAK_TYPES = (0x01, 0x02)          # valid second bytes: 0e 01 and 0e 0
 # The start of a paragraph content block — used to skip section-break binary data
 PARA_CTRL = bytes([0x22, 0x61, 0x0b])
 
+# Inline formatting: second byte of 08 XX (on) / 09 XX (off) sequences.
+# 08 05 and 09 05 are handled separately as PARA_INDENT / TAB_SEQ.
+_FMT_TYPES = {0x00: 'bold', 0x02: 'underline', 0x06: 'superscript', 0x07: 'subscript'}
+
 # Header section-header block: always structural, never body text.
 # Its presence within 300 bytes of the first PARA_CTRL means we are still
 # in the header transition zone — jump past it to find the real content start.
@@ -29,13 +33,21 @@ class ParseError(Exception):
 
 
 class TextRun:
-    """A run of plain text, optionally italic."""
-    def __init__(self, text: str, italic: bool = False):
+    """A run of plain text with optional inline formatting."""
+    def __init__(self, text: str, italic: bool = False, bold: bool = False,
+                 underline: bool = False, superscript: bool = False, subscript: bool = False):
         self.text = text
         self.italic = italic
+        self.bold = bold
+        self.underline = underline
+        self.superscript = superscript
+        self.subscript = subscript
 
     def __repr__(self):
-        return f"TextRun({self.text!r}, italic={self.italic})"
+        flags = ', '.join(k for k, v in [
+            ('italic', self.italic), ('bold', self.bold), ('underline', self.underline),
+            ('superscript', self.superscript), ('subscript', self.subscript)] if v)
+        return f"TextRun({self.text!r}{', ' + flags if flags else ''})"
 
 
 class Paragraph:
@@ -160,12 +172,18 @@ def parse(data: bytes) -> Document:
     current_para = Paragraph()
     current_text: list[str] = []
     italic = False
+    bold = False
+    underline = False
+    superscript = False
+    subscript = False
 
     def flush_run():
-        nonlocal current_text, italic
+        nonlocal current_text
         text = ''.join(current_text)
         if text.strip():
-            current_para.runs.append(TextRun(text, italic))
+            current_para.runs.append(
+                TextRun(text, italic, bold, underline, superscript, subscript)
+            )
         current_text = []
 
     def flush_para():
@@ -263,10 +281,37 @@ def parse(data: bytes) -> Document:
                 current_text.append('\t')
             continue
 
-        # --- Indent metadata: 09 00 01 [+ doubled printable pair] ---
-        # Variant tab/indent marker that appears as trailing metadata after content.
-        if i+2 < n and data[i] == 0x09 and data[i+1] == 0x00 and data[i+2] == 0x01:
-            i += 3
+        # --- Inline formatting: 08 XX (on) / 09 XX (off) ---
+        # bold (00), underline (02), superscript (06), subscript (07).
+        # 08 05 / 09 05 are already handled above as PARA_INDENT / TAB_SEQ.
+        # Params: optional non-printable bytes then optional doubled-pair indent.
+        if data[i] in (0x08, 0x09) and i+1 < n and data[i+1] in _FMT_TYPES:
+            fmt = _FMT_TYPES[data[i+1]]
+            turning_on = (data[i] == 0x08)
+            # Only flush if there is real content to preserve in its own run.
+            # Whitespace-only content (e.g. a pending '\n') must carry forward
+            # into the next run rather than being silently dropped by flush_run().
+            if ''.join(current_text).strip():
+                flush_run()
+            if fmt == 'bold':
+                bold = turning_on
+            elif fmt == 'underline':
+                underline = turning_on
+            elif fmt == 'superscript':
+                superscript = turning_on
+                if turning_on:
+                    subscript = False
+            elif fmt == 'subscript':
+                subscript = turning_on
+                if turning_on:
+                    superscript = False
+            i += 2
+            # Skip optional non-printable param bytes.
+            # Exclude 0x02 (WORD_SEP), 0x06 (hyphen/space) and 0x13 (formatting prefix)
+            # as these are content bytes that must be handled by the main loop.
+            while i < n and data[i] < 0x20 and data[i] not in (WORD_SEP, 0x06, 0x13):
+                i += 1
+            # Skip optional doubled-pair indent marker
             if i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
                 i += 2
             continue

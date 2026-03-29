@@ -46,6 +46,27 @@ def _rtf_escape(text: str) -> str:
     return ''.join(out)
 
 
+def _rtf_run(run: 'TextRun') -> str:
+    """Wrap a TextRun's escaped text in RTF formatting codes."""
+    escaped = _rtf_escape(run.text.strip())
+    if not escaped:
+        return ''
+    pre, post = [], []
+    if run.bold:
+        pre.append(r'\b');       post.insert(0, r'\b0')
+    if run.italic:
+        pre.append(r'\i');       post.insert(0, r'\i0')
+    if run.underline:
+        pre.append(r'\ul');      post.insert(0, r'\ulnone')
+    if run.superscript:
+        pre.append(r'\super');   post.insert(0, r'\nosupersub')
+    elif run.subscript:
+        pre.append(r'\sub');     post.insert(0, r'\nosupersub')
+    prefix = ' '.join(pre) + ' ' if pre else ''
+    suffix = ' ' + ' '.join(post) if post else ''
+    return prefix + escaped + suffix
+
+
 def to_rtf(doc: Document) -> str:
     header = (
         r'{\rtf1\ansi\deff0'
@@ -55,18 +76,10 @@ def to_rtf(doc: Document) -> str:
     )
     body_parts = []
     for para in doc.paragraphs:
-        text = para.plain_text().strip()
-        if not text:
+        if not para.plain_text().strip():
             continue
-        para_parts = []
-        for run in para.runs:
-            escaped = _rtf_escape(run.text.strip())
-            if not escaped:
-                continue
-            if run.italic:
-                para_parts.append(rf'\i {escaped}\i0 ')
-            else:
-                para_parts.append(escaped)
+        para_parts = [_rtf_run(run) for run in para.runs]
+        para_parts = [p for p in para_parts if p]
         if para_parts:
             body_parts.append(r'\pard ' + ' '.join(para_parts) + r'\par' + '\n')
 
@@ -102,8 +115,11 @@ def save_docx(doc: Document, dest: Path) -> None:
             if not text:
                 continue
             r = p.add_run(text + ' ')
-            if run.italic:
-                r.italic = True
+            if run.bold:         r.bold = True
+            if run.italic:       r.italic = True
+            if run.underline:    r.underline = True
+            if run.superscript:  r.font.superscript = True
+            if run.subscript:    r.font.subscript = True
 
     docx.save(dest)
 

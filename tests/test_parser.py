@@ -155,6 +155,57 @@ class TestParagraphBreak(unittest.TestCase):
         self.assertNotIn('J', paras[1][:2])  # 'JJ' (0x4a 0x4a) must not appear
 
 
+class TestBoldUnderlineFormatting(unittest.TestCase):
+
+    def test_bold_on_sets_bold_flag(self):
+        # 08 00 [01 xx xx] turns bold on; text inside has bold=True
+        data = _doc(b'Normal\x02\x08\x00\x01\x11\x11Bold\x09\x00\x01\x11\x11after')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        bold_runs = [r for r in runs if r.bold]
+        self.assertTrue(any('Bold' in r.text for r in bold_runs))
+
+    def test_bold_off_clears_bold_flag(self):
+        # After 09 00 the bold flag should be cleared
+        data = _doc(b'\x08\x00\x01\x11\x11Bold\x09\x00\x01\x11\x11after')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        non_bold = [r for r in runs if not r.bold]
+        self.assertTrue(any('after' in r.text for r in non_bold))
+
+    def test_underline_on_sets_flag(self):
+        # 08 02 (no params) turns underline on
+        data = _doc(b'Before\x08\x02underlined\x09\x02after')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        ul_runs = [r for r in runs if r.underline]
+        self.assertTrue(any('underlined' in r.text for r in ul_runs))
+
+    def test_superscript_on_sets_flag(self):
+        # 08 06 turns superscript on; 09 06 turns it off
+        data = _doc(b'base\x08\x06sup\x09\x06\x01\x11\x11text')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        sup_runs = [r for r in runs if r.superscript]
+        self.assertTrue(any('sup' in r.text for r in sup_runs))
+
+    def test_bold_params_not_in_output(self):
+        # The 01 separator and indent-pair param bytes must not appear as text
+        data = _doc(b'\x08\x00\x01\x11\x11Bold\x09\x00')
+        text = _plain(data)
+        self.assertIn('Bold', text)
+        self.assertNotIn('\x11', text)
+
+    def test_pending_newline_survives_bold_off(self):
+        # A '\n' pending in current_text must not be dropped when bold-off fires
+        # Sequence: content, line-break (emits \n), bold-off, more content
+        data = _doc(b'Line1\x13\x04\x78\x09\x00Line2')
+        text = _plain(data)
+        self.assertIn('Line1', text)
+        self.assertIn('Line2', text)
+        self.assertIn('\n', text)
+
+
 class TestItalic(unittest.TestCase):
 
     def test_italic_on_sets_italic_flag(self):
