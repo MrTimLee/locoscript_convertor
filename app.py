@@ -2,6 +2,7 @@
 Locoscript 2 Converter — desktop UI (tkinter)
 """
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -113,6 +114,7 @@ class App(tk.Tk):
         failed = 0
         skipped = 0
         self._overwrite_policy = None
+        start_time = time.monotonic()
 
         self._progress.config(maximum=total, value=0)
         self._set_status(f'Converting 0 of {total}…')
@@ -141,7 +143,8 @@ class App(tk.Tk):
 
             self._step_progress(i)
 
-        self._finish(total, failed, skipped)
+        elapsed = time.monotonic() - start_time
+        self._finish(total, failed, skipped, elapsed)
 
     def _ask_overwrite(self, dest: Path, batch: bool = False) -> bool:
         """Ask the user whether to overwrite an existing file (called from worker thread).
@@ -197,23 +200,25 @@ class App(tk.Tk):
     def _set_status(self, msg: str):
         self.after(0, lambda: self._status_var.set(msg))
 
-    def _finish(self, total: int, failed: int, skipped: int = 0):
+    def _finish(self, total: int, failed: int, skipped: int = 0, elapsed: float = 0.0):
         self._convert_btn.config(state='normal')
         succeeded = total - failed - skipped
         skip_note = f', {skipped} skipped' if skipped else ''
+        time_note = f'  Time taken: {elapsed:.1f}s'
         if failed == 0:
             self.after(0, lambda: messagebox.showinfo(
                 'Done',
-                f'{succeeded} file(s) converted successfully{skip_note}.'
+                f'{succeeded} file(s) converted successfully{skip_note}.{time_note}'
             ))
-            self._set_status(f'Done. {succeeded} converted{skip_note}.')
+            self._set_status(f'Done. {succeeded} converted{skip_note}. ({elapsed:.1f}s)')
         else:
             self.after(0, lambda: messagebox.showwarning(
                 'Completed with errors',
                 f'{succeeded} file(s) converted{skip_note}.\n'
                 f'{failed} file(s) failed — see {LOG_FILENAME} in each file\'s folder.'
+                f'{time_note}'
             ))
-            self._set_status(f'Done. {succeeded} succeeded{skip_note}, {failed} failed.')
+            self._set_status(f'Done. {succeeded} succeeded{skip_note}, {failed} failed. ({elapsed:.1f}s)')
 
 
 if __name__ == '__main__':
