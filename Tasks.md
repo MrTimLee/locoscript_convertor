@@ -4,7 +4,7 @@
 
 - [ ] **Set up repo on GitHub** — Create a remote repository on GitHub and push the local repo.
 
-- [ ] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — The overwrite prompt currently asks yes/no for each file individually. Batch mode should also offer "Skip ALL" and "Yes to ALL" options. The README already describes this feature as implemented — update it once the feature is done.
+- [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — The overwrite prompt currently asks yes/no for each file individually. Batch mode should also offer "Skip ALL" and "Yes to ALL" options. The README already describes this feature as implemented — update it once the feature is done.
 
 - [ ] **Show time taken in completion message** — The success/summary dialog shows file counts but not elapsed time. The requirements specify the time taken should be included.
 
@@ -41,3 +41,4 @@ These items come from additional Locoscript 2 research and are not currently han
 ## Completed
 
 - [x] **`08 05 01 XX XX` doubled-pair artefacts** — Fixed in branch `fix/paragraph-indent-artefacts`. Added `PARA_INDENT` handler consuming all 5 bytes. Golden fixture regenerated. 23/23 tests passing.
+- [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — Implemented in branch `feature/batch-overwrite-all`. Custom 4-button dialog (Yes / No / Yes to All / Skip All); batch buttons only shown for multi-file conversions. Policy state reset on each new run. 23/23 tests passing.

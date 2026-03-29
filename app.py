@@ -19,6 +19,7 @@ class App(tk.Tk):
         self.title('Locoscript 2 Converter')
         self.resizable(False, False)
         self._files: list[Path] = []
+        self._overwrite_policy: str | None = None  # 'yes_all' | 'skip_all' | None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -110,6 +111,7 @@ class App(tk.Tk):
         fmt = self._fmt_var.get()
         total = len(self._files)
         failed = 0
+        self._overwrite_policy = None
 
         self._progress.config(maximum=total, value=0)
         self._set_status(f'Converting 0 of {total}…')
@@ -120,7 +122,7 @@ class App(tk.Tk):
 
             # Overwrite prompt (run on main thread to avoid tkinter issues)
             if dest.exists():
-                overwrite = self._ask_overwrite(dest)
+                overwrite = self._ask_overwrite(dest, batch=total > 1)
                 if not overwrite:
                     self._step_progress(i)
                     continue
@@ -139,17 +141,49 @@ class App(tk.Tk):
 
         self._finish(total, failed)
 
-    def _ask_overwrite(self, dest: Path) -> bool:
-        """Ask the user whether to overwrite an existing file (called from worker thread)."""
+    def _ask_overwrite(self, dest: Path, batch: bool = False) -> bool:
+        """Ask the user whether to overwrite an existing file (called from worker thread).
+
+        In batch mode, also offers 'Yes to All' and 'Skip All' options which set
+        _overwrite_policy so subsequent conflicts are resolved without prompting.
+        """
+        if self._overwrite_policy == 'yes_all':
+            return True
+        if self._overwrite_policy == 'skip_all':
+            return False
+
         result = [False]
         event = threading.Event()
 
         def _ask():
-            result[0] = messagebox.askyesno(
-                'File exists',
-                f'{dest.name} already exists.\nOverwrite?'
-            )
-            event.set()
+            dlg = tk.Toplevel(self)
+            dlg.title('File exists')
+            dlg.resizable(False, False)
+            dlg.grab_set()
+
+            ttk.Label(
+                dlg,
+                text=f'{dest.name} already exists.\nOverwrite?',
+                padding=(12, 12, 12, 6)
+            ).pack()
+
+            btn_frame = ttk.Frame(dlg)
+            btn_frame.pack(pady=(0, 12), padx=12)
+
+            def choose(value: str):
+                result[0] = value in ('yes', 'yes_all')
+                if value in ('yes_all', 'skip_all'):
+                    self._overwrite_policy = value
+                dlg.destroy()
+                event.set()
+
+            ttk.Button(btn_frame, text='Yes',  command=lambda: choose('yes')).pack(side='left', padx=4)
+            ttk.Button(btn_frame, text='No',   command=lambda: choose('no')).pack(side='left', padx=4)
+            if batch:
+                ttk.Button(btn_frame, text='Yes to All', command=lambda: choose('yes_all')).pack(side='left', padx=4)
+                ttk.Button(btn_frame, text='Skip All',   command=lambda: choose('skip_all')).pack(side='left', padx=4)
+
+            dlg.protocol('WM_DELETE_WINDOW', lambda: choose('no'))
 
         self.after(0, _ask)
         event.wait()

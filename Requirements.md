@@ -56,7 +56,7 @@ The very first paragraph in the output typically contains junk from the document
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
 
 ## Overwrite prompt in batch mode
-The current overwrite prompt (skip / overwrite) does not yet support "skip ALL" or "overwrite ALL" for batch conversions, as specified in the requirements. Each conflicting file prompts individually.
+Implemented. In batch mode the overwrite dialog includes "Yes to All" and "Skip All" options in addition to the per-file Yes/No buttons.
 
 ---
 
