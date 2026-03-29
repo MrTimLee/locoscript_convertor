@@ -30,7 +30,7 @@
 - If during conversion an existing file is found, then the Application should create a prompt asking the user for input
 - Where a file already exists a user can chose to skip conversion or overwrite the exiting file. If running a batch, the user can also chose to "skip ALL overwrites" or "Yes to ALL overwrites"
 - If a batch conversion is complete a success message is shown with the time taken and the count of files processed
-- Files to be converted will have no file extension
+- Files to be converted may have any file extension, or none
 
 # Errors
 - If when processing multiple files a file fails, the error should be logged in a .txt file and processing should move to the next file
@@ -69,7 +69,7 @@ An optional mode in the application that mirrors an entire folder structure, pro
 
 - The application shall provide a "Create processed shadow copy" option in the UI
 - The user selects a source folder (rather than individual files)
-- The application traverses the full folder structure recursively, locating all Locoscript 2 files (files with no extension)
+- The application traverses the full folder structure recursively, locating all Locoscript 2 files (identified by their `DOC` magic bytes, regardless of file extension)
 - A mirror folder structure is created at the same level as the source folder, with the top-level folder named by prepending "Converted_" to the source folder name (e.g. source folder "Archive" → output folder "Converted_Archive")
 - The subfolder hierarchy within the mirror structure matches the source exactly
 - Each located Locoscript 2 file is converted and saved into the corresponding location in the mirror structure, using the selected output format and the same filename with the new extension added

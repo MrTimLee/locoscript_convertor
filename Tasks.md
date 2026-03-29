@@ -14,7 +14,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 
-- [ ] **Remove "no file extension" restriction** — Remove the requirement from Requirements.md that input files must have no file extension, and update any related UI or code that enforces or assumes this.
+- [x] **Remove "no file extension" restriction** — Updated Requirements.md: input files may have any extension or none. Shadow Copy mode spec updated to identify files by `DOC` magic bytes rather than absent extension. No code changes needed — the app already handles both cases correctly.
 
 - [ ] **Shadow Copy mode** — New application mode to mirror-convert an entire folder structure. See Requirements.md for full spec. Do this last.
 
