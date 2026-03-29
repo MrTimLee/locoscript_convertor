@@ -90,7 +90,11 @@ Every valid Locoscript 2 file begins with the three-byte ASCII magic number `44 
 
 ## Byte Encoding
 
-Body text is stored as raw bytes in the range `0x20–0x7E` (printable ASCII). Characters outside this range are control codes or structural metadata. There is no multi-byte character encoding for extended characters in the files studied; unmappable bytes are substituted with `?`.
+Body text is stored as raw bytes in the range `0x20–0x7E` (printable ASCII). Characters outside this range are control codes, structural metadata, or extended character mappings. Known extended character mappings are listed below. Unmappable bytes are substituted with `?`.
+
+| Byte | Unicode | Character |
+|------|---------|-----------|
+| `E9` | U+00A3  | `£` (pound sign) |
 
 ## Control Codes and Sequences
 
@@ -109,8 +113,35 @@ Three-byte sequence. If italic is currently active it acts as "italic off" (end 
 ### Tab / Citation Indent — `09 05 01` + 2 param bytes
 Five bytes total. Emits a tab character (`\t`) in the output. The two trailing bytes are indent parameters and are consumed but not output.
 
+### Inline Formatting — `08 XX` (on) / `09 XX` (off)
+Two-byte sequences that toggle inline character formatting. The second byte identifies the format type:
+
+| Second byte | Format |
+|-------------|--------|
+| `00` | Bold |
+| `02` | Underline |
+| `06` | Superscript |
+| `07` | Subscript |
+
+`08 05` and `09 05` are not formatting toggles — they are handled separately as paragraph indent and tab markers respectively.
+
+After the two-byte sequence, any non-printable parameter bytes are consumed (excluding `02` word separators, `06` hyphen/space, and `13` formatting prefixes). Bold-on (`08 00`) and superscript-off (`09 06`) are followed by `01 XX XX` where `XX XX` is a doubled-pair indent marker; these are also consumed.
+
+### SI Tab / Hanging Indent — `0f 04` (tab) / `0f 05` (hanging indent)
+Two-byte prefix followed by optional parameter bytes:
+
+```
+0f [04|05]
+[optional non-printable param bytes]
+[up to 2 printable tab-stop encoding bytes]
+[optional: 01 separator + identical-byte indent pair]
+→ content
+```
+
+`0f 04` emits a tab character (`\t`). `0f 05` is a hanging-indent marker that emits nothing. In both cases all parameter and indent bytes are consumed.
+
 ### Indent Metadata — `09 00 01` [+ doubled printable pair]
-A variant tab/indent marker that appears as trailing metadata after content bytes. The three-byte prefix is always consumed. If the next two bytes are identical printable characters (`>= 0x20`) they are also consumed as a doubled-pair indent marker.
+Note: `09 00` is now recognised as bold-off (see Inline Formatting above). The trailing `01 XX XX` params are consumed as part of the bold-off handler. This entry is retained for historical reference only.
 
 ### Section / Page Break — `0e 01` or `0e 02`
 A two-byte sequence where `0e` is followed by `01` (section break) or `02` (page break). This is followed by a variable-length binary metadata block encoding the new section's page layout. The entire block is skipped by jumping forward to the next `22 61 0b` paragraph content marker. Content accumulated up to this point is flushed as a complete paragraph before the skip.
