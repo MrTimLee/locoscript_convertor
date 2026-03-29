@@ -4,10 +4,6 @@
 
 These items come from additional Locoscript 2 research and are not currently handled by the parser. Each needs investigation against real sample files before implementing.
 
-- [x] **`0x05` (ENQ) — extended character encoding** — Implemented in branch `feature/enq-extended-characters`. Added `_ENQ_CHAR_MAP` and 5-byte handler (`05 base 01 diacritic 01`). Maps `(0x63, 0x13)` → ç (confirmed in "façade", "Français"). Trailing doubled-pair indent consumed to prevent 'FF'/'DD' artifacts. Requirements.md updated. 38/38 tests passing.
-
-- [x] **"JOY" magic word** — Investigated. 233 JOY files found in sample set (34% of total). Two sub-versions: `01 04` (127 files, word sep `0x0a`, para break `07 02 0a 55 0e`) and `01 02` (106 files, word sep `0x01`, different para structure). No `22 61 0b` anchor — format is fundamentally different from DOC. Implemented informative `ParseError` naming the format. Full JOY parser moved to Known Limitations as a future task.
-
 - [ ] **Detailed file header map** — Colleague provides a byte-level header map: version bytes at `0x03`–`0x04`, 90-char document summary at `0x05`–`0x5E`, font table at `0x138` (10 × 28 bytes), layout table at `0x2C6` (10 × 73 bytes). Currently the entire header is skipped. Investigate whether extracting version, summary, or layout data (e.g. margins, tab stops) would improve conversion quality or fix the first-paragraph junk issue.
 
 ## Known Limitations (future work)
@@ -32,3 +28,5 @@ These items come from additional Locoscript 2 research and are not currently han
 - [x] **`0xE9` = `£` symbol** — Implemented in branch `feature/e9-pound-sign`. Added extended character mapping in the main parse loop. Golden fixture regenerated. 24/24 tests passing.
 - [x] **Bold, underline, superscript, subscript** — Implemented in branch `feature/bold-underline-formatting`. Extended `TextRun` with bold/underline/superscript/subscript flags. Added `08 XX`/`09 XX` inline formatting handler in parser. RTF output uses `\b`/`\b0`, `\ul`/`\ulnone`, `\super`/`\nosupersub`. DOCX output sets `run.bold`, `run.underline`, `run.font.superscript`. Confirmed bold in real sample files (BOOTSHEX.HAM). 33/33 tests passing.
 - [x] **`0x0F` (SI) sequences — line/paragraph structure** — Implemented in branch `feature/si-sequences`. `0f 04` (tab) and `0f 05` (hanging indent) had printable param bytes leaking as artefacts. Added handlers consuming params and emitting `\t` for `0f 04`. 27/27 tests passing.
+- [x] **`0x05` (ENQ) — extended character encoding** — Implemented in branch `feature/enq-extended-characters`. Added `_ENQ_CHAR_MAP` and 5-byte handler (`05 base 01 diacritic 01`). Maps `(0x63, 0x13)` → ç (confirmed in "façade", "Français"). Trailing doubled-pair indent consumed to prevent 'FF'/'DD' artifacts. 38/38 tests passing.
+- [x] **"JOY" magic word** — Investigated. 233 JOY files in sample set (34% of total). Two sub-versions with different word separators and paragraph structures; no `22 61 0b` anchor. Informative `ParseError` added. Full JOY parser added to Known Limitations. 39/39 tests passing.
