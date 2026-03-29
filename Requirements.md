@@ -50,7 +50,7 @@
 These are issues that are understood but not yet resolved. They are good candidates for future work.
 
 ## First paragraph / document header
-The very first paragraph in the output typically contains junk from the document header area — page layout metadata, section-control bytes, and the Locoscript version string (e.g. `== PCND 4.1...`). The parser skips to the first `22 61 0b` content marker, but the header structure before the first real paragraph is complex enough that some binary artefacts still leak through. This affects only para[0] and does not impact the body of the document. A future fix would identify and skip the full header block before content parsing begins.
+Largely resolved. `_find_content_start` now iterates through `22 61 0b c4 0e` structural section-header blocks, jumping across any following section break to find the first real content paragraph. This eliminated header junk in 185 of 443 sample files with no regressions. A small number of documents (e.g. those with mixed control bytes inside the first content block) may still show minor artefacts in para[0], but the body of the document is unaffected.
 
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
