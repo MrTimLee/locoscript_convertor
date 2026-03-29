@@ -86,7 +86,16 @@ This section documents the binary encoding patterns discovered through reverse-e
 
 ## File Header
 
-Every valid Locoscript 2 file begins with the three-byte ASCII magic number `44 4f 43` ("DOC"). Files have no extension. Content parsing begins at the first occurrence of the paragraph content marker `22 61 0b` — everything before it is a document header containing page layout and section metadata that is not needed for text extraction.
+Every valid Locoscript 2 file begins with a three-byte ASCII magic number. Two magic values have been identified:
+
+| Magic | Hex | Status |
+|-------|-----|--------|
+| `DOC` | `44 4f 43` | Supported — full parser implemented |
+| `JOY` | `4a 4f 59` | Not currently supported — see Known Limitations |
+
+For `DOC` files, content parsing begins at the first occurrence of the paragraph content marker `22 61 0b` — everything before it is a document header containing page layout and section metadata that is not needed for text extraction.
+
+`JOY` files use a different binary structure (no `22 61 0b` anchor, different word separator and paragraph break bytes) and require a separate parser. Attempting to parse a JOY file raises a `ParseError` with an informative message.
 
 ## Byte Encoding
 

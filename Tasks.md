@@ -6,13 +6,15 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [x] **`0x05` (ENQ) — extended character encoding** — Implemented in branch `feature/enq-extended-characters`. Added `_ENQ_CHAR_MAP` and 5-byte handler (`05 base 01 diacritic 01`). Maps `(0x63, 0x13)` → ç (confirmed in "façade", "Français"). Trailing doubled-pair indent consumed to prevent 'FF'/'DD' artifacts. Requirements.md updated. 38/38 tests passing.
 
-- [ ] **"JOY" magic word** — Colleague notes `JOY` as a valid alternative file header magic (vs. `DOC`). Currently any non-`DOC` file throws a `ParseError`. Investigate what `JOY` files represent and handle appropriately (either support or reject with a clearer error).
+- [x] **"JOY" magic word** — Investigated. 233 JOY files found in sample set (34% of total). Two sub-versions: `01 04` (127 files, word sep `0x0a`, para break `07 02 0a 55 0e`) and `01 02` (106 files, word sep `0x01`, different para structure). No `22 61 0b` anchor — format is fundamentally different from DOC. Implemented informative `ParseError` naming the format. Full JOY parser moved to Known Limitations as a future task.
 
 - [ ] **Detailed file header map** — Colleague provides a byte-level header map: version bytes at `0x03`–`0x04`, 90-char document summary at `0x05`–`0x5E`, font table at `0x138` (10 × 28 bytes), layout table at `0x2C6` (10 × 73 bytes). Currently the entire header is skipped. Investigate whether extracting version, summary, or layout data (e.g. margins, tab stops) would improve conversion quality or fix the first-paragraph junk issue.
 
 ## Known Limitations (future work)
 
 - [ ] **Tab handling in converter output** — The parser correctly emits `\t` for `0f 04` tab sequences, but all three converters call `.strip()` on run/paragraph text, which drops leading/trailing tabs. RTF output also passes `\t` as a raw character rather than the `\tab` control word. DOCX strips tabs from run text entirely. Improve converter fidelity for tab characters in TXT, RTF, and DOCX output.
+
+- [ ] **JOY format parser** — 233 JOY files in the sample set cannot currently be converted. Two sub-versions exist: `01 04` (word sep `0x0a`, para break `07 02 0a 55 0e XX YY 06 ZZ ZZ`) and `01 02` (word sep `0x01`, different structure). Implementing proper support would require a separate parser alongside the existing DOC parser.
 
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 

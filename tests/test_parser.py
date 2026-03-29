@@ -128,6 +128,12 @@ class TestFileHeader(unittest.TestCase):
         with self.assertRaises(ParseError):
             parse(b'XXXsome content')
 
+    def test_joy_magic_raises_informative_error(self):
+        # JOY files should raise ParseError with a message that names the format
+        with self.assertRaises(ParseError) as ctx:
+            parse(b'JOY\x01\x04some content')
+        self.assertIn('JOY', str(ctx.exception))
+
 
 class TestWordSeparator(unittest.TestCase):
 
