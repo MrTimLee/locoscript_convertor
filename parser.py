@@ -11,6 +11,7 @@ PARA_BREAK     = bytes([0x13, 0x04, 0x50])  # paragraph end  (P)
 LINE_BREAK     = bytes([0x13, 0x04, 0x78])  # line break     (x)
 ITALIC_ON      = bytes([0x13, 0x04, 0x64])  # italic start   (d)
 TAB_SEQ        = bytes([0x09, 0x05, 0x01])  # tab / citation indent
+PARA_INDENT    = bytes([0x08, 0x05, 0x01])  # paragraph indent marker (5 bytes total)
 SECTION_BREAK  = 0x0e                        # section / page break marker byte
 SECTION_BREAK_TYPES = (0x01, 0x02)          # valid second bytes: 0e 01 and 0e 02
 
@@ -199,6 +200,14 @@ def parse(data: bytes) -> Document:
             flush_run()
             current_text.append('\t')
             i += 5  # 09 05 01 + 2 indent/param bytes
+            continue
+
+        # --- Paragraph indent marker: 08 05 01 + 2 param bytes ---
+        # Structural paragraph indent/style marker. Byte-identical in structure to
+        # TAB_SEQ but emits nothing. Without this handler the 2 param bytes (which
+        # are often printable) leak into the output as doubled-pair artefacts.
+        if data[i:i+3] == PARA_INDENT:
+            i += 5  # 08 05 01 + 2 indent/param bytes
             continue
 
         # --- Indent metadata: 09 00 01 [+ doubled printable pair] ---
