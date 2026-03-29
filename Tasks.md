@@ -18,6 +18,8 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Known Limitations (future work)
 
+- [ ] **Tab handling in converter output** — The parser correctly emits `\t` for `0f 04` tab sequences, but all three converters call `.strip()` on run/paragraph text, which drops leading/trailing tabs. RTF output also passes `\t` as a raw character rather than the `\tab` control word. DOCX strips tabs from run text entirely. Improve converter fidelity for tab characters in TXT, RTF, and DOCX output.
+
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 
 - [ ] **Remove "no file extension" restriction** — Remove the requirement from Requirements.md that input files must have no file extension, and update any related UI or code that enforces or assumes this.
