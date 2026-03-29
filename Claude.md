@@ -41,6 +41,20 @@ xxd <filename> > hex_dump
 ```
 
 
+## Task Workflow
+
+When implementing a task from `Tasks.md`:
+
+1. Pick a task from the open items in `Tasks.md`
+2. Create a feature branch (e.g. `git checkout -b feature/my-task`)
+3. Develop and test the code
+4. Update documentation (Requirements.md, Tasks.md, etc.)
+5. Raise a PR
+6. Commit / merge
+
+Do **not** commit task work directly to `main`.
+
+
 ## Debugging New Binary Patterns
 
 When a new sample file produces garbled output, the workflow that works:
