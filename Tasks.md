@@ -30,7 +30,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Known Limitations (future work)
 
-- [ ] **First paragraph junk** — The parser skips to the first `22 61 0b` marker but some binary artefacts from the document header still leak into para[0]. A future fix would identify and skip the full header block.
+- [x] **First paragraph junk** — Implemented in branch `fix/first-paragraph-header-junk`. `_find_content_start` now iterates through `22 61 0b c4 0e` structural header blocks, skipping across section breaks to land on the first real content paragraph. Improved 185/443 sample files, 0 regressions. 23/23 tests passing.
 
 - [ ] **Untested document types** — Parser was developed against a single sample file. Locoscript 2 letters, labels, and other document types may surface unrecognised control sequences.
 
@@ -43,3 +43,4 @@ These items come from additional Locoscript 2 research and are not currently han
 - [x] **`08 05 01 XX XX` doubled-pair artefacts** — Fixed in branch `fix/paragraph-indent-artefacts`. Added `PARA_INDENT` handler consuming all 5 bytes. Golden fixture regenerated. 23/23 tests passing.
 - [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — Implemented in branch `feature/batch-overwrite-all`. Custom 4-button dialog (Yes / No / Yes to All / Skip All); batch buttons only shown for multi-file conversions. Policy state reset on each new run. 23/23 tests passing.
 - [x] **Show time taken in completion message** — Implemented in branch `feature/completion-time`. Elapsed time recorded with `time.monotonic()` and shown in both the summary dialog and status bar. 23/23 tests passing.
+- [x] **First paragraph junk** — Implemented in branch `fix/first-paragraph-header-junk`. `_find_content_start` now iterates through `22 61 0b c4 0e` structural header blocks, skipping across section breaks to land on the first real content paragraph. Improved 185/443 sample files, 0 regressions. 23/23 tests passing.

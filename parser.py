@@ -18,6 +18,11 @@ SECTION_BREAK_TYPES = (0x01, 0x02)          # valid second bytes: 0e 01 and 0e 0
 # The start of a paragraph content block — used to skip section-break binary data
 PARA_CTRL = bytes([0x22, 0x61, 0x0b])
 
+# Header section-header block: always structural, never body text.
+# Its presence within 300 bytes of the first PARA_CTRL means we are still
+# in the header transition zone — jump past it to find the real content start.
+_C40E_BLOCK = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e])
+
 
 class ParseError(Exception):
     pass
@@ -58,14 +63,34 @@ def _find_content_start(data: bytes) -> int:
     """
     Find the byte offset where document content begins.
 
-    Start at the first 0x0b-type paragraph control sequence, which reliably
-    marks the beginning of body text regardless of document type.  The complex
-    section-heading area before it produces too many artefacts to parse cleanly.
+    The first ``22 61 0b`` is always in the header/transition zone.  If a
+    ``22 61 0b c4 0e`` structural section-header block appears within 300 bytes
+    of the current position we are still inside the header — jump past the
+    following section break (``0e 01`` / ``0e 02``) to the next ``22 61 0b``.
+    Repeat up to 5 times to handle documents with multiple header cycles.
     """
     try:
-        return data.index(PARA_CTRL)
+        pos = data.index(PARA_CTRL)
     except ValueError:
         return 3
+
+    for _ in range(5):
+        search_end = min(pos + 300, len(data))
+        c4_pos = data.find(_C40E_BLOCK, pos + 3, search_end)
+        if c4_pos == -1:
+            break
+        # Look for a section/page break byte shortly after the c4 0e block
+        sec_pos = None
+        for j in range(c4_pos + 5, min(c4_pos + 30, len(data) - 1)):
+            if data[j] == 0x0e and data[j + 1] in SECTION_BREAK_TYPES:
+                sec_pos = j
+                break
+        next_para = data.find(PARA_CTRL, sec_pos + 2 if sec_pos else c4_pos + 5)
+        if next_para < 0:
+            break
+        pos = next_para
+
+    return pos
 
 
 def _skip_ctrl_sequence(data: bytes, i: int) -> int:
