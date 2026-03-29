@@ -111,6 +111,7 @@ class App(tk.Tk):
         fmt = self._fmt_var.get()
         total = len(self._files)
         failed = 0
+        skipped = 0
         self._overwrite_policy = None
 
         self._progress.config(maximum=total, value=0)
@@ -124,6 +125,7 @@ class App(tk.Tk):
             if dest.exists():
                 overwrite = self._ask_overwrite(dest, batch=total > 1)
                 if not overwrite:
+                    skipped += 1
                     self._step_progress(i)
                     continue
 
@@ -139,7 +141,7 @@ class App(tk.Tk):
 
             self._step_progress(i)
 
-        self._finish(total, failed)
+        self._finish(total, failed, skipped)
 
     def _ask_overwrite(self, dest: Path, batch: bool = False) -> bool:
         """Ask the user whether to overwrite an existing file (called from worker thread).
@@ -195,22 +197,23 @@ class App(tk.Tk):
     def _set_status(self, msg: str):
         self.after(0, lambda: self._status_var.set(msg))
 
-    def _finish(self, total: int, failed: int):
+    def _finish(self, total: int, failed: int, skipped: int = 0):
         self._convert_btn.config(state='normal')
-        succeeded = total - failed
+        succeeded = total - failed - skipped
+        skip_note = f', {skipped} skipped' if skipped else ''
         if failed == 0:
             self.after(0, lambda: messagebox.showinfo(
                 'Done',
-                f'All {total} file(s) converted successfully.'
+                f'{succeeded} file(s) converted successfully{skip_note}.'
             ))
-            self._set_status(f'Done. {total} file(s) converted.')
+            self._set_status(f'Done. {succeeded} converted{skip_note}.')
         else:
             self.after(0, lambda: messagebox.showwarning(
                 'Completed with errors',
-                f'{succeeded} file(s) converted.\n'
+                f'{succeeded} file(s) converted{skip_note}.\n'
                 f'{failed} file(s) failed — see {LOG_FILENAME} in each file\'s folder.'
             ))
-            self._set_status(f'Done. {succeeded} succeeded, {failed} failed.')
+            self._set_status(f'Done. {succeeded} succeeded{skip_note}, {failed} failed.')
 
 
 if __name__ == '__main__':
