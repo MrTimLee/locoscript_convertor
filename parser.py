@@ -94,24 +94,41 @@ class Document:
         return '\n\n'.join(p.plain_text() for p in self.paragraphs if p.plain_text().strip())
 
 
-def _find_content_start(data: bytes) -> int:
+def _detect_ctrl_byte(data: bytes) -> int:
+    """Return the control-sequence discriminator byte for this file.
+
+    Scans for the first ``22 XX 0b`` occurrence and returns ``XX``.
+    Standard Locoscript 2 DOC files use ``0x61`` (``"a``); some files
+    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``).
+    Returns ``0x61`` if no matching sequence is found.
+    """
+    for i in range(len(data) - 2):
+        if data[i] == 0x22 and data[i + 2] == 0x0b:
+            return data[i + 1]
+    return 0x61
+
+
+def _find_content_start(data: bytes, ctrl_byte: int = 0x61) -> int:
     """
     Find the byte offset where document content begins.
 
-    The first ``22 61 0b`` is always in the header/transition zone.  If a
-    ``22 61 0b c4 0e`` structural section-header block appears within 300 bytes
+    The first ``22 XX 0b`` is always in the header/transition zone.  If a
+    ``22 XX 0b c4 0e`` structural section-header block appears within 300 bytes
     of the current position we are still inside the header — jump past the
-    following section break (``0e 01`` / ``0e 02``) to the next ``22 61 0b``.
+    following section break (``0e 01`` / ``0e 02``) to the next ``22 XX 0b``.
     Repeat up to 5 times to handle documents with multiple header cycles.
     """
+    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    c40e_block = bytes([0x22, ctrl_byte, 0x0b, 0xc4, 0x0e])
+
     try:
-        pos = data.index(PARA_CTRL)
+        pos = data.index(para_ctrl)
     except ValueError:
         return 3
 
     for _ in range(5):
         search_end = min(pos + 300, len(data))
-        c4_pos = data.find(_C40E_BLOCK, pos + 3, search_end)
+        c4_pos = data.find(c40e_block, pos + 3, search_end)
         if c4_pos == -1:
             break
         # Look for a section/page break byte shortly after the c4 0e block
@@ -120,7 +137,7 @@ def _find_content_start(data: bytes) -> int:
             if data[j] == 0x0e and data[j + 1] in SECTION_BREAK_TYPES:
                 sec_pos = j
                 break
-        next_para = data.find(PARA_CTRL, sec_pos + 2 if sec_pos else c4_pos + 5)
+        next_para = data.find(para_ctrl, sec_pos + 2 if sec_pos else c4_pos + 5)
         if next_para < 0:
             break
         pos = next_para
@@ -128,20 +145,21 @@ def _find_content_start(data: bytes) -> int:
     return pos
 
 
-def _skip_ctrl_sequence(data: bytes, i: int) -> int:
+def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
     """
-    Skip a "a (0x22 0x61) control sequence and return the new offset.
+    Skip a ``22 XX`` control sequence and return the new offset.
 
     Type 0x0b (paragraph content) has a fixed 8-byte structure:
-        22 61 0b | 3 param bytes | 2 indent bytes
+        22 XX 0b | 3 param bytes | 2 indent bytes
     All other types: skip prefix + type + 1 byte, then skip any trailing
     non-printable bytes and doubled-pair indent markers.
     """
+    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
     n = len(data)
     ctrl_type = data[i+2] if i+2 < n else 0x00
 
     if ctrl_type == 0x0b:
-        # Structure: 22 61 0b + 3 param bytes + 2 indent bytes = 8 bytes.
+        # Structure: 22 XX 0b + 3 param bytes + 2 indent bytes = 8 bytes.
         # Several special cases based on what the param/indent bytes contain:
         if i + 7 < n and data[i+6] == 0x13 and data[i+7] == 0x04:
             # Indent bytes are 13 04 (a formatting prefix) — leave them for
@@ -154,7 +172,7 @@ def _skip_ctrl_sequence(data: bytes, i: int) -> int:
         elif i + 4 < n and data[i+3] == 0xc4 and data[i+4] == 0x0e:
             # c4 0e block: always a structural header with no text content.
             # Skip forward to the next paragraph content block (may be distant).
-            next_block = data.find(PARA_CTRL, i + 5)
+            next_block = data.find(para_ctrl, i + 5)
             i = next_block if next_block >= 0 else n
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
@@ -163,8 +181,8 @@ def _skip_ctrl_sequence(data: bytes, i: int) -> int:
             # 13 04 formatting sequence falls at offset 7-8 (one later than case 1);
             # skip 7 bytes and let the main loop handle the 13 04 xx sequence.
             i += 7
-        elif i + 8 < n and data[i+7] == 0x22 and data[i+8] == 0x61:
-            # Another CTRL_PREFIX (22 61) starts at the indent-byte position;
+        elif i + 8 < n and data[i+7] == 0x22 and data[i+8] == ctrl_byte:
+            # Another control prefix starts at the indent-byte position;
             # skip 7 bytes and let the main loop handle that control sequence.
             i += 7
         else:
@@ -194,8 +212,12 @@ def parse(data: bytes) -> Document:
     if data[:3] != MAGIC:
         raise ParseError("Not a valid Locoscript 2 file (missing DOC header)")
 
+    ctrl_byte = _detect_ctrl_byte(data)
+    ctrl_prefix = bytes([0x22, ctrl_byte])
+    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+
     doc = Document()
-    i = _find_content_start(data)
+    i = _find_content_start(data, ctrl_byte)
     n = len(data)
 
     current_para = Paragraph()
@@ -230,7 +252,7 @@ def parse(data: bytes) -> Document:
         if data[i] == SECTION_BREAK and i+1 < n and data[i+1] in SECTION_BREAK_TYPES:
             flush_run()
             flush_para()
-            next_para = data.find(PARA_CTRL, i + 2)
+            next_para = data.find(para_ctrl, i + 2)
             i = next_para if next_para >= 0 else n
             continue
 
@@ -345,17 +367,17 @@ def parse(data: bytes) -> Document:
                 i += 2
             continue
 
-        # --- Control sequence: 22 61 ---
-        if data[i:i+2] == CTRL_PREFIX:
+        # --- Control sequence: 22 XX ---
+        if data[i:i+2] == ctrl_prefix:
             ctrl_type = data[i+2] if i+2 < n else 0
             if ctrl_type in (WORD_SEP, 0x06):
-                # "a followed immediately by a word separator is literal text
+                # 22 XX followed immediately by a word separator is literal text
                 # (e.g. the opening quote in '"a typical..."'), not a control code
                 current_text.append('"')
-                current_text.append('a')
+                current_text.append(chr(ctrl_byte))
                 i += 2
             else:
-                i = _skip_ctrl_sequence(data, i)
+                i = _skip_ctrl_sequence(data, i, ctrl_byte)
                 # Skip trailing indent metadata: 00 01 + doubled printable pair
                 if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
                     i += 4

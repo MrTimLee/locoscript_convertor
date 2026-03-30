@@ -205,9 +205,9 @@ A two-byte sequence where `0e` is followed by `01` (section break) or `02` (page
 ### Hyphen / Extra Space — `06`
 Contextual byte. Emits a hyphen (`-`) when it falls between two printable text characters. Emits a space when adjacent to a word separator (`02`), another `06`, or a non-printable preceding byte.
 
-## Control Sequence Prefix — `22 61`
+## Control Sequence Prefix — `22 61` / `22 6d`
 
-The two-byte sequence `22 61` introduces a structured control sequence. The third byte is the control type. The prefix is also the literal opening of the typographic double-quote string `"a` in the document body (e.g. `"a typical example"`): when the byte immediately following `22 61` is a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code.
+The two-byte sequence `22 XX` introduces a structured control sequence. The third byte is the control type. The discriminator byte `XX` is `0x61` (`"a`) in most files, but some files (e.g. `BUILDNGS.A-C`, `MARKETPL.*`) use `0x6d` (`"m`) instead. The parser detects the variant by scanning for the first `22 XX 0b` occurrence in the file. When `XX` follows `22` and is itself followed by a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code.
 
 ### Control Type `0b` — Paragraph Content Block
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:
