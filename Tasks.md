@@ -6,7 +6,19 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Known Limitations (future work)
 
-- [ ] **High-byte character mappings (0x80–0xFF)** — Locoscript 2 uses the Amstrad CP/M Plus character set, which differs from Latin-1/Unicode for bytes above 0x7F. Currently all unrecognised high bytes are silently skipped. The colleague's document flags `0xC3` → è and `0xB4` → é as known mistranslations. The full mapping table is at https://en.wikipedia.org/wiki/Amstrad_CP/M_Plus_character_set. Implementing this would significantly improve character fidelity across the sample set.
+- [ ] **High-byte character mappings (0x80–0xFF)** — Investigation complete; implementation pending. Key finding: the Amstrad CP/M Plus character table (Wikipedia) is **not** the LocoScript 2 encoding — applying it wholesale would produce garbage (e.g. Wikipedia maps `0xE9` → û, but real files confirm `0xE9` → £; `0xB4` → é not ˆ; `0xFA` → ç not ã). The correct approach is to build the map empirically from real file evidence only.
+
+  **Confirmed mappings from real file context** (ready to implement):
+  - `0x84` → `'` (right single quote) — "Kelly's"
+  - `0x8F` → `æ` — "Archæology", "orthopaedic"
+  - `0xB4` → `é` — "Café", "née"
+  - `0xC3` → `è` — "dix-huitième", "Adèle" (colleague was correct; earlier ciné/née cases may use a different byte)
+  - `0xE4` → `ê` — "Fête" (multiple confirmed occurrences)
+  - `0xE8` → `ô` — "Dépôt/dépôts" (plausible; all occurrences are "dep[e8]t/dep[e8]ts")
+  - `0xE9` → `£` — already in parser; confirmed from real files; diverges from Amstrad table (û)
+  - `0xFA` → `ç` — "façade" (second encoding alongside the ENQ 5-byte sequence)
+
+  **Implementation:** Add `_HIGH_BYTE_MAP` dict to `parser.py`; replace the existing `0xE9` special-case with a general `data[i] >= 0x80` handler that looks up the map and falls back to `?`. Update Requirements.md extended character table. Write pattern tests for each new mapping.
 
 - [ ] **RTF page size** — RTF output does not currently set page dimensions. A4 = 11906 × 16838 twips (from colleague's document). Adding `\paperw11906\paperh16838` and appropriate margin settings would produce correctly-sized RTF output.
 
