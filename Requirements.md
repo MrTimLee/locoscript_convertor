@@ -55,8 +55,8 @@ Largely resolved. `_find_content_start` now iterates through `22 61 0b c4 0e` st
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
 
-## Overwrite prompt in batch mode
-Implemented. In batch mode the overwrite dialog includes "Yes to All" and "Skip All" options in addition to the per-file Yes/No buttons.
+## JOY format files
+233 files in the sample set use the `JOY` magic word rather than `DOC`. These have a different binary structure — no `22 61 0b` paragraph anchor, different word separator and paragraph break bytes — and require a separate parser. Attempting to convert a JOY file currently raises an informative `ParseError` and logs the failure. Two sub-versions exist: `01 04` and `01 02`, with different word separators and paragraph structures.
 
 ---
 
@@ -132,6 +132,9 @@ Three-byte sequence. If italic is currently active it acts as "italic off" (end 
 
 ### Tab / Citation Indent — `09 05 01` + 2 param bytes
 Five bytes total. Emits a tab character (`\t`) in the output. The two trailing bytes are indent parameters and are consumed but not output.
+
+### Paragraph Indent Marker — `08 05 01` + 2 param bytes
+Five bytes total. Structural paragraph indent/style marker. Emits nothing. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
 
 ### ENQ Extended Character — `05 base 01 diacritic 01`
 A five-byte sequence encoding an accented or extended character:
