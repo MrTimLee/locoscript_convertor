@@ -395,6 +395,82 @@ class TestENQExtendedCharacters(unittest.TestCase):
         self.assertIn('text', text)
 
 
+class TestConverterTabHandling(unittest.TestCase):
+    """Converter output correctly preserves tab characters in all three formats."""
+
+    def _parse_tab_doc(self):
+        # Paragraph: "Col1" TAB "Col2"
+        # 09 05 01 00 00 = tab sequence; 13 04 50 = paragraph break
+        data = _doc(b'Col1\x09\x05\x01\x00\x00Col2\x13\x04\x50')
+        return parse(data)
+
+    def test_txt_preserves_leading_tab(self):
+        # A paragraph whose first token is a tab must not be stripped
+        data = _doc(b'\x09\x05\x01\x00\x00Col1\x02Col2\x13\x04\x50')
+        from converter import to_txt
+        out = to_txt(parse(data))
+        self.assertTrue(out.startswith('\t'), f"Expected leading tab, got: {out!r}")
+
+    def test_txt_preserves_mid_paragraph_tab(self):
+        from converter import to_txt
+        out = to_txt(self._parse_tab_doc())
+        self.assertIn('\t', out)
+        self.assertIn('Col1', out)
+        self.assertIn('Col2', out)
+
+    def test_rtf_tab_becomes_control_word(self):
+        from converter import to_rtf
+        out = to_rtf(self._parse_tab_doc())
+        self.assertIn(r'\tab', out)
+        self.assertNotIn('\t', out)  # raw tab must not appear in RTF output
+
+    def test_rtf_preserves_content_around_tab(self):
+        from converter import to_rtf
+        out = to_rtf(self._parse_tab_doc())
+        self.assertIn('Col1', out)
+        self.assertIn('Col2', out)
+
+    def test_docx_preserves_tab(self):
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        doc = self._parse_tab_doc()
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(doc, tmp)
+            result = DocxDocument(tmp)
+            full_text = ''.join(run.text for para in result.paragraphs for run in para.runs)
+            self.assertIn('\t', full_text)
+            self.assertIn('Col1', full_text)
+            self.assertIn('Col2', full_text)
+        finally:
+            os.unlink(tmp)
+
+
+class TestConverterNoSpuriousTrailingSpace(unittest.TestCase):
+    """DOCX runs must not have a spurious trailing space appended."""
+
+    def test_docx_run_text_not_padded(self):
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        # Single word, no trailing space expected in run text
+        data = _doc(b'Hello\x13\x04\x50')
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(parse(data), tmp)
+            result = DocxDocument(tmp)
+            run_texts = [r.text for p in result.paragraphs for r in p.runs]
+            for rt in run_texts:
+                self.assertFalse(rt.endswith(' '), f"Run text has spurious trailing space: {rt!r}")
+        finally:
+            os.unlink(tmp)
+
+
 class TestControlSequenceSkip(unittest.TestCase):
 
     def test_unknown_ctrl_type_skipped_cleanly(self):
