@@ -12,7 +12,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [ ] **Paragraph alignment (centre/right)** — DC1 (`0x11`) and DLE (`0x10`) appear to be centre and right-alignment control sequences respectively (colleague's document, "Control Sequences" section). Not yet decoded or handled by the parser. Investigate against sample files before implementing.
 
-- [ ] **Tab handling in converter output** — The parser correctly emits `\t` for `0f 04` tab sequences, but all three converters call `.strip()` on run/paragraph text, which drops leading/trailing tabs. RTF output also passes `\t` as a raw character rather than the `\tab` control word. DOCX strips tabs from run text entirely. Improve converter fidelity for tab characters in TXT, RTF, and DOCX output.
+- [x] **Tab handling in converter output** — Fixed in branch `feature/tab-handling`. TXT now uses `strip(' \n')` (preserving tabs at paragraph edges). RTF maps `\t` → `\tab ` control word in `_rtf_escape` and no longer strips run text before escaping. DOCX no longer strips run text and removes the spurious trailing space appended to every run. 45/45 tests passing.
 
 - [ ] **JOY format parser** — 233 JOY files in the sample set cannot currently be converted. Two sub-versions exist: `01 04` (word sep `0x0a`, para break `07 02 0a 55 0e XX YY 06 ZZ ZZ`) and `01 02` (word sep `0x01`, different structure). Implementing proper support would require a separate parser alongside the existing DOC parser.
 

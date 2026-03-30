@@ -15,8 +15,8 @@ from parser import Document, TextRun
 def to_txt(doc: Document) -> str:
     lines = []
     for para in doc.paragraphs:
-        text = para.plain_text().strip()
-        if text:
+        text = para.plain_text().strip(' \n')
+        if text.strip():
             lines.append(text)
     return '\n\n'.join(lines)
 
@@ -39,6 +39,8 @@ def _rtf_escape(text: str) -> str:
             out.append('\\{')
         elif ch == '}':
             out.append('\\}')
+        elif ch == '\t':
+            out.append(r'\tab ')
         elif ord(ch) > 127:
             out.append(f'\\u{ord(ch)}?')
         else:
@@ -48,9 +50,9 @@ def _rtf_escape(text: str) -> str:
 
 def _rtf_run(run: 'TextRun') -> str:
     """Wrap a TextRun's escaped text in RTF formatting codes."""
-    escaped = _rtf_escape(run.text.strip())
-    if not escaped:
+    if not run.text.strip():
         return ''
+    escaped = _rtf_escape(run.text)
     pre, post = [], []
     if run.bold:
         pre.append(r'\b');       post.insert(0, r'\b0')
@@ -111,10 +113,9 @@ def save_docx(doc: Document, dest: Path) -> None:
             continue
         p = docx.add_paragraph()
         for run in para.runs:
-            text = run.text.strip()
-            if not text:
+            if not run.text.strip():
                 continue
-            r = p.add_run(text + ' ')
+            r = p.add_run(run.text)
             if run.bold:         r.bold = True
             if run.italic:       r.italic = True
             if run.underline:    r.underline = True
