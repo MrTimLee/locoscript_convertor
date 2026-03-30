@@ -72,6 +72,8 @@ def _rtf_run(run: 'TextRun') -> str:
 def to_rtf(doc: Document) -> str:
     header = (
         r'{\rtf1\ansi\deff0'
+        r'\paperw11906\paperh16838'
+        r'\margl1440\margr1440\margt1440\margb1440'
         r'{\fonttbl{\f0\froman\fcharset0 Times New Roman;}}'
         r'{\colortbl ;}'
         '\n'
