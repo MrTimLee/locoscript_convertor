@@ -101,9 +101,18 @@ For `DOC` files, content parsing begins at the first occurrence of the paragraph
 
 Body text is stored as raw bytes in the range `0x20–0x7E` (printable ASCII). Characters outside this range are control codes, structural metadata, or extended character mappings. Known extended character mappings are listed below. Unmappable bytes are substituted with `?`.
 
-| Byte | Unicode | Character |
-|------|---------|-----------|
-| `E9` | U+00A3  | `£` (pound sign) |
+| Byte | Unicode | Character | Evidence |
+|------|---------|-----------|----------|
+| `84` | U+2019  | `'` (right single quote) | "Kelly's" |
+| `8F` | U+00E6  | `æ` | "Archæology", "orthopaedic" |
+| `B4` | U+00E9  | `é` | "Café", "née" |
+| `C3` | U+00E8  | `è` | "dix-huitième", "Adèle" |
+| `E4` | U+00EA  | `ê` | "Fête" |
+| `E8` | U+00F4  | `ô` | "Dépôt" |
+| `E9` | U+00A3  | `£` | confirmed; diverges from Amstrad CP/M Plus table (which maps `E9` → û) |
+| `FA` | U+00E7  | `ç` | "façade" (second encoding alongside ENQ 5-byte sequence) |
+
+All mappings are built empirically from real LocoScript 2 file evidence. The Amstrad CP/M Plus character table (Wikipedia) is **not** the LocoScript 2 encoding and must not be applied wholesale. Bytes in the range `0x80–0xFF` that are not in this table are substituted with `?`.
 
 Extended characters that require more than one byte are encoded using the ENQ sequence described below.
 
