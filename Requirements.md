@@ -50,7 +50,7 @@
 These are issues that are understood but not yet resolved. They are good candidates for future work.
 
 ## First paragraph / document header
-Largely resolved. `_find_content_start` now iterates through `22 61 0b c4 0e` structural section-header blocks, jumping across any following section break to find the first real content paragraph. This eliminated header junk in 185 of 443 sample files with no regressions. A small number of documents (e.g. those with mixed control bytes inside the first content block) may still show minor artefacts in para[0], but the body of the document is unaffected.
+Largely resolved. `_find_content_start` now iterates through structural section-header blocks (`22 XX 0b` with B3 ≥ `0x80` and B4 = `0e`, e.g. `c4 0e` in standard files and `a6 0e` in `22 6d` variant files), jumping across any following section break to find the first real content paragraph. This eliminated header junk in 185 of 443 sample files with no regressions. A small number of documents (e.g. those with mixed control bytes inside the first content block) may still show minor artefacts in para[0], but the body of the document is unaffected.
 
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
@@ -213,7 +213,7 @@ The two-byte sequence `22 XX` introduces a structured control sequence. The thir
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:
 
 ```
-22 61 0b | B3 B4 B5 | B6 B7
+22 XX 0b | B3 B4 B5 | B6 B7
           3 param    2 indent
 ```
 
@@ -223,10 +223,10 @@ Several structural variants exist:
 |---|---|---|
 | `B6 B7` = `13 04` | Formatting prefix immediately follows — leave for main loop | Skip 6 bytes |
 | `B6..B8` = `78 00 01` | Extended indent variant; followed by a doubled printable pair | Skip 11 bytes |
-| `B3 B4` = `c4 0e` | Structural section-header block; never contains body text | Skip to next `22 61 0b` |
+| `B3 >= 0x80` and `B4` = `0e` | Structural section/layout header block; never contains body text (e.g. `c4 0e` in standard files, `a6 0e` / `88 0e` / `84 0e` in `22 6d` variant files; low-B3 values such as `3a 0e` are normal content blocks) | Skip to next `22 XX 0b` |
 | `B4 B5 B6` = `0a 09 00` | Tab-indent variant; followed by `01` + doubled printable pair | Skip 11 bytes |
 | `B7 B8` = `13 04` | Formatting prefix one byte later — leave for main loop | Skip 7 bytes |
-| `B7 B8` = `22 61` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
+| `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
 | (default) | Standard 8-byte block | Skip 8 bytes |
 
 ### Other Control Types
