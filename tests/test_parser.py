@@ -526,6 +526,94 @@ class TestConverterNoSpuriousTrailingSpace(unittest.TestCase):
             os.unlink(tmp)
 
 
+class TestParagraphAlignment(unittest.TestCase):
+    """DC1/DLE alignment codes set paragraph alignment in parser and converters."""
+
+    def _para_with_alignment(self, prefix_bytes: bytes) -> 'Paragraph':
+        # prefix_bytes appear right after the content-start block, before text
+        data = _doc(prefix_bytes + b'Hello\x13\x04\x50')
+        doc = parse(data)
+        return doc.paragraphs[0] if doc.paragraphs else None
+
+    def test_11_06_sets_centre_alignment(self):
+        para = self._para_with_alignment(b'\x11\x06')
+        self.assertIsNotNone(para)
+        self.assertEqual(para.alignment, 'centre')
+
+    def test_10_07_sets_right_alignment(self):
+        para = self._para_with_alignment(b'\x10\x07')
+        self.assertIsNotNone(para)
+        self.assertEqual(para.alignment, 'right')
+
+    def test_10_04_sets_right_alignment(self):
+        para = self._para_with_alignment(b'\x10\x04')
+        self.assertIsNotNone(para)
+        self.assertEqual(para.alignment, 'right')
+
+    def test_default_alignment_is_left(self):
+        para = self._para_with_alignment(b'')
+        self.assertIsNotNone(para)
+        self.assertEqual(para.alignment, 'left')
+
+    def test_11_06_does_not_emit_spurious_space(self):
+        # The 0x06 param byte must be consumed, not produce a leading space
+        data = _doc(b'\x11\x06Hello\x13\x04\x50')
+        doc = parse(data)
+        self.assertTrue(doc.paragraphs[0].plain_text().startswith('Hello'))
+
+    def test_rtf_centre_uses_qc(self):
+        from converter import to_rtf
+        data = _doc(b'\x11\x06Hello\x13\x04\x50')
+        out = to_rtf(parse(data))
+        self.assertIn(r'\pard\qc', out)
+
+    def test_rtf_right_uses_qr(self):
+        from converter import to_rtf
+        data = _doc(b'\x10\x07Hello\x13\x04\x50')
+        out = to_rtf(parse(data))
+        self.assertIn(r'\pard\qr', out)
+
+    def test_rtf_left_has_no_alignment_code(self):
+        from converter import to_rtf
+        data = _doc(b'Hello\x13\x04\x50')
+        out = to_rtf(parse(data))
+        self.assertIn(r'\pard ', out)
+        self.assertNotIn(r'\qc', out)
+        self.assertNotIn(r'\qr', out)
+
+    def test_docx_centre_alignment(self):
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        data = _doc(b'\x11\x06Hello\x13\x04\x50')
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(parse(data), tmp)
+            result = DocxDocument(tmp)
+            self.assertEqual(result.paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.CENTER)
+        finally:
+            os.unlink(tmp)
+
+    def test_docx_right_alignment(self):
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        data = _doc(b'\x10\x07Hello\x13\x04\x50')
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(parse(data), tmp)
+            result = DocxDocument(tmp)
+            self.assertEqual(result.paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        finally:
+            os.unlink(tmp)
+
+
 class TestRTFPageSize(unittest.TestCase):
     """RTF output must declare A4 page dimensions and margins."""
 

@@ -78,6 +78,8 @@ def to_rtf(doc: Document) -> str:
         r'{\colortbl ;}'
         '\n'
     )
+    _rtf_align = {'centre': r'\qc', 'right': r'\qr', 'left': ''}
+
     body_parts = []
     for para in doc.paragraphs:
         if not para.plain_text().strip():
@@ -85,7 +87,9 @@ def to_rtf(doc: Document) -> str:
         para_parts = [_rtf_run(run) for run in para.runs]
         para_parts = [p for p in para_parts if p]
         if para_parts:
-            body_parts.append(r'\pard ' + ' '.join(para_parts) + r'\par' + '\n')
+            align = _rtf_align.get(para.alignment, '')
+            pard = r'\pard' + align + ' '
+            body_parts.append(pard + ' '.join(para_parts) + r'\par' + '\n')
 
     return header + ''.join(body_parts) + '}'
 
@@ -102,6 +106,7 @@ def save_docx(doc: Document, dest: Path) -> None:
     try:
         from docx import Document as DocxDocument
         from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError as e:
         raise RuntimeError(
             "python-docx is required for DOCX output. "
@@ -110,10 +115,17 @@ def save_docx(doc: Document, dest: Path) -> None:
 
     docx = DocxDocument()
 
+    _docx_align = {
+        'centre': WD_ALIGN_PARAGRAPH.CENTER,
+        'right':  WD_ALIGN_PARAGRAPH.RIGHT,
+    }
+
     for para in doc.paragraphs:
         if not para.plain_text().strip():
             continue
         p = docx.add_paragraph()
+        if para.alignment in _docx_align:
+            p.alignment = _docx_align[para.alignment]
         for run in para.runs:
             if not run.text.strip():
                 continue

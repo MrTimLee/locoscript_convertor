@@ -10,7 +10,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [x] **RTF page size** — Implemented in branch `feature/rtf-page-size`. Added `\paperw11906\paperh16838\margl1440\margr1440\margt1440\margb1440` to the RTF header in `converter.py`. 4 new tests. 57/57 tests passing.
 
-- [ ] **Paragraph alignment (centre/right)** — DC1 (`0x11`) and DLE (`0x10`) appear to be centre and right-alignment control sequences respectively (colleague's document, "Control Sequences" section). Not yet decoded or handled by the parser. Investigate against sample files before implementing.
+- [x] **Paragraph alignment (centre/right)** — Implemented in branch `feature/paragraph-alignment`. Investigation confirmed: `11 06` (DC1 + ACK) = centre alignment; `10 07` / `10 04` (DLE + BEL/EOT) = right alignment. Both appear immediately after `22 61 0b` paragraph content blocks in 4,257 and 4,422 occurrences respectively across the sample set. Added `alignment` field to `Paragraph`; 2-byte handlers in `parse()` (the `06`/`07`/`04` param byte is now consumed rather than emitting a spurious space). RTF uses `\qc`/`\qr` on `\pard`. DOCX uses `WD_ALIGN_PARAGRAPH`. Golden fixture regenerated. 67/67 tests passing.
 
 - [x] **Tab handling in converter output** — Fixed in branch `feature/tab-handling`. TXT now uses `strip(' \n')` (preserving tabs at paragraph edges). RTF maps `\t` → `\tab ` control word in `_rtf_escape` and no longer strips run text before escaping. DOCX no longer strips run text and removes the spurious trailing space appended to every run. 45/45 tests passing.
 
