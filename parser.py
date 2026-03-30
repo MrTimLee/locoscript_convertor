@@ -34,6 +34,21 @@ _ENQ_CHAR_MAP: dict[tuple[int, int], str] = {
     (0x63, 0x13): 'ç',   # c + cedilla  (e.g. "façade", "Français")
 }
 
+# High-byte character mappings (0x80–0xFF).
+# Built empirically from real LocoScript 2 file evidence only — the Amstrad
+# CP/M Plus Wikipedia table is NOT correct for LocoScript 2 (e.g. Wikipedia
+# maps 0xE9 → û but real files confirm 0xE9 → £).
+_HIGH_BYTE_MAP: dict[int, str] = {
+    0x84: '\u2019',  # '  right single quotation mark  (e.g. "Kelly's")
+    0x8F: 'æ',       # ae ligature                     (e.g. "Archæology")
+    0xB4: 'é',       # e acute                         (e.g. "Café", "née")
+    0xC3: 'è',       # e grave                         (e.g. "dix-huitième", "Adèle")
+    0xE4: 'ê',       # e circumflex                    (e.g. "Fête")
+    0xE8: 'ô',       # o circumflex                    (e.g. "Dépôt")
+    0xE9: '£',       # pound sign                      (confirmed; diverges from Amstrad table)
+    0xFA: 'ç',       # c cedilla                       (e.g. "façade" — second encoding)
+}
+
 
 class ParseError(Exception):
     pass
@@ -380,9 +395,9 @@ def parse(data: bytes) -> Document:
                 i += 3
             continue
 
-        # --- Extended character mappings ---
-        if data[i] == 0xE9:
-            current_text.append('£')
+        # --- High-byte character mappings (0x80–0xFF) ---
+        if data[i] >= 0x80:
+            current_text.append(_HIGH_BYTE_MAP.get(data[i], '?'))
             i += 1
             continue
 

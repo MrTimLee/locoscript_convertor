@@ -348,13 +348,68 @@ class TestLiteralQuotePrefix(unittest.TestCase):
 
 
 class TestExtendedCharacters(unittest.TestCase):
+    """High-byte (0x80–0xFF) character mappings confirmed from real file evidence."""
 
     def test_e9_maps_to_pound_sign(self):
-        # 0xE9 is the Locoscript 2 encoding for the pound sign £
+        # 0xE9 → £ (confirmed; diverges from Amstrad CP/M Plus table)
         data = _doc(b'\xe91.4million')
         text = _plain(data)
         self.assertIn('£', text)
         self.assertNotIn('?', text)
+
+    def test_84_maps_to_right_single_quote(self):
+        # 0x84 → ' right single quotation mark (e.g. "Kelly's")
+        data = _doc(b'Kelly\x84s')
+        text = _plain(data)
+        self.assertIn('\u2019', text)
+        self.assertNotIn('?', text)
+
+    def test_8f_maps_to_ae_ligature(self):
+        # 0x8F → æ (e.g. "Archæology")
+        data = _doc(b'Arch\x8fology')
+        text = _plain(data)
+        self.assertIn('æ', text)
+        self.assertIn('Archæology', text)
+
+    def test_b4_maps_to_e_acute(self):
+        # 0xB4 → é (e.g. "Café")
+        data = _doc(b'Caf\xb4')
+        text = _plain(data)
+        self.assertIn('é', text)
+        self.assertIn('Café', text)
+
+    def test_c3_maps_to_e_grave(self):
+        # 0xC3 → è (e.g. "Adèle")
+        data = _doc(b'Ad\xc3le')
+        text = _plain(data)
+        self.assertIn('è', text)
+        self.assertIn('Adèle', text)
+
+    def test_e4_maps_to_e_circumflex(self):
+        # 0xE4 → ê (e.g. "Fête")
+        data = _doc(b'F\xe4te')
+        text = _plain(data)
+        self.assertIn('ê', text)
+        self.assertIn('Fête', text)
+
+    def test_e8_maps_to_o_circumflex(self):
+        # 0xE8 → ô (e.g. "Dépôt")
+        data = _doc(b'D\xb4p\xe8t')
+        text = _plain(data)
+        self.assertIn('ô', text)
+
+    def test_fa_maps_to_c_cedilla(self):
+        # 0xFA → ç (e.g. "façade" — second encoding alongside ENQ sequence)
+        data = _doc(b'fa\xfaade')
+        text = _plain(data)
+        self.assertIn('ç', text)
+        self.assertIn('façade', text)
+
+    def test_unknown_high_byte_maps_to_question_mark(self):
+        # Bytes not in the map fall back to '?'
+        data = _doc(b'un\x99known')
+        text = _plain(data)
+        self.assertIn('?', text)
 
 
 class TestENQExtendedCharacters(unittest.TestCase):
