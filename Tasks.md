@@ -2,7 +2,7 @@
 
 ## Known Limitations (future work)
 
-- [ ] **Output filename collision on multi-part extensions** — Files like `BUILDNGS.A-C` and `BUILDNGS.H` both convert to `BUILDNGS.docx` (or `.rtf`/`.txt`), overwriting each other. Fix: append the new extension rather than replace it — `BUILDNGS.A-C` → `BUILDNGS.A-C.docx`. Affects `app.py` output path logic.
+- [x] **Output filename collision on multi-part extensions** — Fixed in branch `feature/output-filename-collision`. Changed `src.with_suffix(fmt)` to `src.parent / (src.name + fmt)` in `app.py` so the new extension is always appended (`BUILDNGS.A-C` → `BUILDNGS.A-C.docx`) rather than replacing the existing one. 67/67 tests passing.
 
 - [ ] **Variable control prefix (`22 6d` vs `22 61`)** — Some files (e.g. `BUILDNGS.A-C`, `MARKETPL.*`) use `22 6d` (`"m`) as the control sequence prefix instead of the standard `22 61` (`"a`). The parser hardcodes `22 61`, so these files produce a single paragraph of garbage instead of content. Fix: add `_detect_ctrl_byte()` to scan the file for the first `22 XX 0b` occurrence and thread the detected byte through `_find_content_start`, `_skip_ctrl_sequence`, and the main parse loop.
 

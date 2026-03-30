@@ -121,7 +121,7 @@ class App(tk.Tk):
 
         for i, src in enumerate(self._files, start=1):
             self._set_status(f'Converting {i} of {total}: {src.name}')
-            dest = src.with_suffix(fmt)
+            dest = src.parent / (src.name + fmt)
 
             # Overwrite prompt (run on main thread to avoid tkinter issues)
             if dest.exists():
