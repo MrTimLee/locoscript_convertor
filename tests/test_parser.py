@@ -526,6 +526,34 @@ class TestConverterNoSpuriousTrailingSpace(unittest.TestCase):
             os.unlink(tmp)
 
 
+class TestRTFPageSize(unittest.TestCase):
+    """RTF output must declare A4 page dimensions and margins."""
+
+    def _rtf_for(self, body: bytes) -> str:
+        from converter import to_rtf
+        return to_rtf(parse(_doc(body)))
+
+    def test_rtf_contains_a4_paper_width(self):
+        out = self._rtf_for(b'Hello')
+        self.assertIn(r'\paperw11906', out)
+
+    def test_rtf_contains_a4_paper_height(self):
+        out = self._rtf_for(b'Hello')
+        self.assertIn(r'\paperh16838', out)
+
+    def test_rtf_contains_margin_settings(self):
+        out = self._rtf_for(b'Hello')
+        self.assertIn(r'\margl1440', out)
+        self.assertIn(r'\margr1440', out)
+        self.assertIn(r'\margt1440', out)
+        self.assertIn(r'\margb1440', out)
+
+    def test_rtf_page_size_appears_before_body(self):
+        # Page dimensions must be in the header, before any paragraph content
+        out = self._rtf_for(b'Hello')
+        self.assertLess(out.index(r'\paperw11906'), out.index('Hello'))
+
+
 class TestControlSequenceSkip(unittest.TestCase):
 
     def test_unknown_ctrl_type_skipped_cleanly(self):

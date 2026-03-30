@@ -8,7 +8,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 - [x] **High-byte character mappings (0x80–0xFF)** — Implemented in branch `feature/high-byte-char-mappings`. Added `_HIGH_BYTE_MAP` dict with 8 empirically confirmed mappings; replaced `0xE9` special-case with a general `data[i] >= 0x80` handler (falls back to `?` for unmapped bytes). Updated Requirements.md extended character table. 9 new pattern tests added. Golden fixture regenerated. 53/53 tests passing.
 
-- [ ] **RTF page size** — RTF output does not currently set page dimensions. A4 = 11906 × 16838 twips (from colleague's document). Adding `\paperw11906\paperh16838` and appropriate margin settings would produce correctly-sized RTF output.
+- [x] **RTF page size** — Implemented in branch `feature/rtf-page-size`. Added `\paperw11906\paperh16838\margl1440\margr1440\margt1440\margb1440` to the RTF header in `converter.py`. 4 new tests. 57/57 tests passing.
 
 - [ ] **Paragraph alignment (centre/right)** — DC1 (`0x11`) and DLE (`0x10`) appear to be centre and right-alignment control sequences respectively (colleague's document, "Control Sequences" section). Not yet decoded or handled by the parser. Investigate against sample files before implementing.
 
