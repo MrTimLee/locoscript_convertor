@@ -169,9 +169,13 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # Extended variant: indent area is 78 00, followed by 01 + real
             # indent pair.  Skip the full 11 bytes (8 + 01 + WW WW).
             i += 11
-        elif i + 4 < n and data[i+3] == 0xc4 and data[i+4] == 0x0e:
-            # c4 0e block: always a structural header with no text content.
-            # Skip forward to the next paragraph content block (may be distant).
+        elif i + 4 < n and data[i+3] >= 0x80 and data[i+4] == 0x0e:
+            # Any 0b block with a high B3 byte (≥0x80) and 0x0e at B4 is a
+            # structural section/layout header with no body text (e.g. c4 0e
+            # in standard files, a6 0e / 88 0e / 84 0e in 22 6d variant files).
+            # Low-B3 values (e.g. 3a 0e, 36 0e) are normal content blocks and
+            # use the default 8-byte skip.  Skip to the next paragraph content
+            # block (may be far ahead, past a binary metadata blob).
             next_block = data.find(para_ctrl, i + 5)
             i = next_block if next_block >= 0 else n
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:

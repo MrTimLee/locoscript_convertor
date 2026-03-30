@@ -687,6 +687,35 @@ class TestVariableCtrlPrefix(unittest.TestCase):
         data = self._doc_m(b'First\x13\x04\x50' + para2 + b'Second\x13\x04\x50')
         self.assertEqual(_paras(data), ['First', 'Second'])
 
+    def test_a6_0e_structural_block_skipped(self):
+        # A 22 6d 0b block with high B3 (≥0x80) and 0x0e at B4 is a structural
+        # section/layout header — skip it and the following binary blob to
+        # reach the next real paragraph, emitting no garbage.
+        structural = bytes([0x22, 0x6d, 0x0b, 0xa6, 0x0e, 0x07, 0x03, 0x00])
+        binary_blob = bytes([0x70, 0x08, 0x80, 0x0e, 0x25, 0x02, 0x00, 0x78])
+        next_para = self._PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = self._HEADER_M + structural + binary_blob + next_para + b'Clean\x13\x04\x50'
+        text = _plain(data)
+        self.assertEqual(text, 'Clean')
+
+    def test_low_b3_0e_block_not_skipped(self):
+        # A 0b block with low B3 (<0x80) and 0x0e at B4 (e.g. 36 0e) is a
+        # normal content block — do NOT skip to next para, use default 8-byte skip.
+        # After the 8-byte skip the text 'After' must still be present.
+        normal_block = bytes([0x22, 0x6d, 0x0b, 0x36, 0x0e, 0x01, 0x04, 0x04])
+        data = self._HEADER_M + normal_block + b'After\x13\x04\x50'
+        text = _plain(data)
+        self.assertIn('After', text)
+
+    def test_c4_0e_still_skipped_in_standard_file(self):
+        # The generalised B3≥0x80 + B4=0x0e check must not break c4 0e.
+        structural = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x00, 0x00, 0x00])
+        binary_blob = bytes([0x70, 0x08, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00])
+        next_para = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = _doc(b'') + structural + binary_blob + next_para + b'OK\x13\x04\x50'
+        text = _plain(data)
+        self.assertIn('OK', text)
+
     def test_22_61_not_treated_as_ctrl_in_6d_file(self):
         # In a 22 6d file, a literal 22 61 sequence must be emitted as '"a',
         # not silently consumed as a control sequence
