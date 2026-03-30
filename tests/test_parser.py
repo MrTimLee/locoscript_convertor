@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from parser import parse, ParseError, Document, Paragraph, TextRun
+from parser import parse, ParseError, Document, Paragraph, TextRun, _detect_ctrl_byte
 from converter import to_txt
 
 
@@ -650,6 +650,79 @@ class TestControlSequenceSkip(unittest.TestCase):
         data = _doc(b'\x22\x61\x0c\x00\x00\x00After')
         text = _plain(data)
         self.assertIn('After', text)
+
+
+class TestVariableCtrlPrefix(unittest.TestCase):
+    """Files using 22 6d 0b as the control prefix must parse correctly."""
+
+    # Minimal envelope using 22 6d 0b instead of 22 61 0b
+    _PARA_CTRL_M = bytes([0x22, 0x6d, 0x0b])
+    _HEADER_M = MAGIC + _PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+
+    def _doc_m(self, body: bytes) -> bytes:
+        return self._HEADER_M + body
+
+    def test_detect_ctrl_byte_standard(self):
+        # Standard files (22 61 0b) return 0x61
+        data = _doc(b'Hello')
+        self.assertEqual(_detect_ctrl_byte(data), 0x61)
+
+    def test_detect_ctrl_byte_variant(self):
+        # Variant files (22 6d 0b) return 0x6d
+        data = self._doc_m(b'Hello')
+        self.assertEqual(_detect_ctrl_byte(data), 0x6d)
+
+    def test_detect_ctrl_byte_fallback(self):
+        # No 22 XX 0b sequence at all → default 0x61
+        self.assertEqual(_detect_ctrl_byte(b'DOC' + b'\x00' * 10), 0x61)
+
+    def test_22_6d_file_produces_content(self):
+        # A 22 6d file must yield the body text rather than garbage
+        data = self._doc_m(b'Hello\x02world\x13\x04\x50')
+        self.assertEqual(_plain(data), 'Hello world')
+
+    def test_22_6d_multi_paragraph(self):
+        # Multiple paragraphs separated by 22 6d 0b blocks
+        para2 = self._PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = self._doc_m(b'First\x13\x04\x50' + para2 + b'Second\x13\x04\x50')
+        self.assertEqual(_paras(data), ['First', 'Second'])
+
+    def test_a6_0e_structural_block_skipped(self):
+        # A 22 6d 0b block with high B3 (≥0x80) and 0x0e at B4 is a structural
+        # section/layout header — skip it and the following binary blob to
+        # reach the next real paragraph, emitting no garbage.
+        structural = bytes([0x22, 0x6d, 0x0b, 0xa6, 0x0e, 0x07, 0x03, 0x00])
+        binary_blob = bytes([0x70, 0x08, 0x80, 0x0e, 0x25, 0x02, 0x00, 0x78])
+        next_para = self._PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = self._HEADER_M + structural + binary_blob + next_para + b'Clean\x13\x04\x50'
+        text = _plain(data)
+        self.assertEqual(text, 'Clean')
+
+    def test_low_b3_0e_block_not_skipped(self):
+        # A 0b block with low B3 (<0x80) and 0x0e at B4 (e.g. 36 0e) is a
+        # normal content block — do NOT skip to next para, use default 8-byte skip.
+        # After the 8-byte skip the text 'After' must still be present.
+        normal_block = bytes([0x22, 0x6d, 0x0b, 0x36, 0x0e, 0x01, 0x04, 0x04])
+        data = self._HEADER_M + normal_block + b'After\x13\x04\x50'
+        text = _plain(data)
+        self.assertIn('After', text)
+
+    def test_c4_0e_still_skipped_in_standard_file(self):
+        # The generalised B3≥0x80 + B4=0x0e check must not break c4 0e.
+        structural = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x00, 0x00, 0x00])
+        binary_blob = bytes([0x70, 0x08, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00])
+        next_para = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = _doc(b'') + structural + binary_blob + next_para + b'OK\x13\x04\x50'
+        text = _plain(data)
+        self.assertIn('OK', text)
+
+    def test_22_61_not_treated_as_ctrl_in_6d_file(self):
+        # In a 22 6d file, a literal 22 61 sequence must be emitted as '"a',
+        # not silently consumed as a control sequence
+        data = self._doc_m(b'\x22\x61\x02text\x13\x04\x50')
+        text = _plain(data)
+        self.assertIn('"a', text)
+        self.assertIn('text', text)
 
 
 if __name__ == '__main__':
