@@ -4,8 +4,6 @@
 
 These items come from additional Locoscript 2 research and are not currently handled by the parser. Each needs investigation against real sample files before implementing.
 
-- [ ] **Detailed file header map** — Colleague provides a byte-level header map: version bytes at `0x03`–`0x04`, 90-char document summary at `0x05`–`0x5E`, font table at `0x138` (10 × 28 bytes), layout table at `0x2C6` (10 × 73 bytes). Currently the entire header is skipped. Investigate whether extracting version, summary, or layout data (e.g. margins, tab stops) would improve conversion quality or fix the first-paragraph junk issue.
-
 ## Known Limitations (future work)
 
 - [ ] **High-byte character mappings (0x80–0xFF)** — Locoscript 2 uses the Amstrad CP/M Plus character set, which differs from Latin-1/Unicode for bytes above 0x7F. Currently all unrecognised high bytes are silently skipped. The colleague's document flags `0xC3` → è and `0xB4` → é as known mistranslations. The full mapping table is at https://en.wikipedia.org/wiki/Amstrad_CP/M_Plus_character_set. Implementing this would significantly improve character fidelity across the sample set.
@@ -26,6 +24,7 @@ These items come from additional Locoscript 2 research and are not currently han
 
 ## Completed
 
+- [x] **Detailed file header map** — Investigated. Summary field (0x05–0x5E) contains template descriptions, not document titles — not useful. Version bytes always `01 03` — not useful. Font table at `0x138` (10 × 28 bytes) confirmed with font names ("CG Times", "LX Roman" etc.) but font references in the text stream have not been identified, so font mapping is blocked for now. Layout table at `0x2C6` (10 × 73 bytes) confirmed: scale pitch at entry offset +11 (`0x18` = 10cpi = 0.1 inch/unit), point size at +13 (pt × 10, `0x78` = 12pt), 15 tab stop positions at +33–+47 (scale pitch units; `0x18` = default 2.4", custom values confirmed). Document-level margins appear around `0x2B8` (two 16-bit fields, `0x28` or `0x30` across files) but unit system unconfirmed — left unresolved. Tab stop extraction feeds into the tab handling task. First-paragraph junk unaffected.
 - [x] **Set up repo on GitHub** — Remote repository created at github.com/MrTimLee/locoscript_convertor. GitHub CLI (`gh`) authenticated for raising PRs.
 - [x] **`08 05 01 XX XX` doubled-pair artefacts** — Fixed in branch `fix/paragraph-indent-artefacts`. Added `PARA_INDENT` handler consuming all 5 bytes. Golden fixture regenerated. 23/23 tests passing.
 - [x] **Batch overwrite: "Skip ALL" / "Overwrite ALL"** — Implemented in branch `feature/batch-overwrite-all`. Custom 4-button dialog (Yes / No / Yes to All / Skip All); batch buttons only shown for multi-file conversions. Policy state reset on each new run. 23/23 tests passing.
