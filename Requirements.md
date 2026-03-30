@@ -26,7 +26,7 @@
 - If processing multiple files the application should run them serially
 - If a character cannot be directly mapped to a Unicode equivalent a "?" will be used instead
 - Converted files should be saved in the same folder as the input file
-- Converted files will be named the same as the input file with the new extension 
+- Converted files will be named the same as the input file with the new extension appended (e.g. `BUILDNGS.A-C` → `BUILDNGS.A-C.docx`)
 - If during conversion an existing file is found, then the Application should create a prompt asking the user for input
 - Where a file already exists a user can chose to skip conversion or overwrite the exiting file. If running a batch, the user can also chose to "skip ALL overwrites" or "Yes to ALL overwrites"
 - If a batch conversion is complete a success message is shown with the time taken and the count of files processed
