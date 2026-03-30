@@ -76,6 +76,7 @@ class Paragraph:
     """A paragraph containing a list of TextRuns."""
     def __init__(self):
         self.runs: list[TextRun] = []
+        self.alignment: str = 'left'  # 'left', 'centre', 'right'
 
     def plain_text(self) -> str:
         return ''.join(r.text for r in self.runs)
@@ -364,6 +365,20 @@ def parse(data: bytes) -> Document:
         if data[i] == WORD_SEP:
             current_text.append(' ')
             i += 1
+            continue
+
+        # --- Paragraph alignment: 11 06 (centre) / 10 07 or 10 04 (right) ---
+        # DC1 + ACK = centre; DLE + BEL/EOT = right.
+        # Appear immediately after paragraph content blocks; apply to the
+        # current paragraph.  The parameter byte is consumed as part of the
+        # 2-byte sequence so it does not emit a spurious space via the 0x06 handler.
+        if data[i] == 0x11 and i+1 < n and data[i+1] == 0x06:
+            current_para.alignment = 'centre'
+            i += 2
+            continue
+        if data[i] == 0x10 and i+1 < n and data[i+1] in (0x07, 0x04):
+            current_para.alignment = 'right'
+            i += 2
             continue
 
         # --- Hyphen / extra space: 06 ---

@@ -166,6 +166,20 @@ Two-byte sequences that toggle inline character formatting. The second byte iden
 
 After the two-byte sequence, any non-printable parameter bytes are consumed (excluding `02` word separators, `06` hyphen/space, and `13` formatting prefixes). Bold-on (`08 00`) and superscript-off (`09 06`) are followed by `01 XX XX` where `XX XX` is a doubled-pair indent marker; these are also consumed.
 
+### Paragraph Alignment — `11 06` (centre) / `10 07` or `10 04` (right)
+
+Two-byte sequences setting the alignment of the current paragraph:
+
+| Sequence | Alignment |
+|----------|-----------|
+| `11 06` (DC1 + ACK) | Centre |
+| `10 07` (DLE + BEL) | Right |
+| `10 04` (DLE + EOT) | Right |
+
+Both bytes are consumed as a unit; the second byte is a parameter and does not produce output. Alignment defaults to left when no alignment code is present. Confirmed from real sample files — `11 06` appears immediately after `22 61 0b` paragraph content blocks in ~4,000 occurrences across the sample set.
+
+RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOCX output sets `paragraph.alignment` to `WD_ALIGN_PARAGRAPH.CENTER` or `WD_ALIGN_PARAGRAPH.RIGHT`.
+
 ### SI Tab / Hanging Indent — `0f 04` (tab) / `0f 05` (hanging indent)
 Two-byte prefix followed by optional parameter bytes:
 
