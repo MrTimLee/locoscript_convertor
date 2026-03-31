@@ -14,10 +14,16 @@ from parser import Document, TextRun
 
 def to_txt(doc: Document) -> str:
     lines = []
+    if doc.header and doc.header.plain_text().strip():
+        lines.append(doc.header.plain_text().strip(' \n'))
+        lines.append('---')
     for para in doc.paragraphs:
         text = para.plain_text().strip(' \n')
         if text.strip():
             lines.append(text)
+    if doc.footer and doc.footer.plain_text().strip():
+        lines.append('---')
+        lines.append(doc.footer.plain_text().strip(' \n'))
     return '\n\n'.join(lines)
 
 
@@ -69,8 +75,19 @@ def _rtf_run(run: 'TextRun') -> str:
     return prefix + escaped + suffix
 
 
+def _rtf_para(para: 'Paragraph') -> str:
+    """Render a single Paragraph as an RTF paragraph string (no trailing newline)."""
+    _rtf_align = {'centre': r'\qc', 'right': r'\qr', 'left': ''}
+    parts = [_rtf_run(run) for run in para.runs]
+    parts = [p for p in parts if p]
+    if not parts:
+        return ''
+    align = _rtf_align.get(para.alignment, '')
+    return r'\pard' + align + ' ' + ' '.join(parts) + r'\par'
+
+
 def to_rtf(doc: Document) -> str:
-    header = (
+    rtf_header = (
         r'{\rtf1\ansi\deff0'
         r'\paperw11906\paperh16838'
         r'\margl1440\margr1440\margt1440\margb1440'
@@ -78,20 +95,27 @@ def to_rtf(doc: Document) -> str:
         r'{\colortbl ;}'
         '\n'
     )
-    _rtf_align = {'centre': r'\qc', 'right': r'\qr', 'left': ''}
 
-    body_parts = []
+    parts = []
+
+    if doc.header and doc.header.plain_text().strip():
+        hdr = _rtf_para(doc.header)
+        if hdr:
+            parts.append(r'{\header ' + hdr + '}\n')
+
+    if doc.footer and doc.footer.plain_text().strip():
+        ftr = _rtf_para(doc.footer)
+        if ftr:
+            parts.append(r'{\footer ' + ftr + '}\n')
+
     for para in doc.paragraphs:
         if not para.plain_text().strip():
             continue
-        para_parts = [_rtf_run(run) for run in para.runs]
-        para_parts = [p for p in para_parts if p]
-        if para_parts:
-            align = _rtf_align.get(para.alignment, '')
-            pard = r'\pard' + align + ' '
-            body_parts.append(pard + ' '.join(para_parts) + r'\par' + '\n')
+        p = _rtf_para(para)
+        if p:
+            parts.append(p + '\n')
 
-    return header + ''.join(body_parts) + '}'
+    return rtf_header + ''.join(parts) + '}'
 
 
 def save_rtf(doc: Document, dest: Path) -> None:
@@ -120,10 +144,8 @@ def save_docx(doc: Document, dest: Path) -> None:
         'right':  WD_ALIGN_PARAGRAPH.RIGHT,
     }
 
-    for para in doc.paragraphs:
-        if not para.plain_text().strip():
-            continue
-        p = docx.add_paragraph()
+    def _add_para(container, para):
+        p = container.add_paragraph()
         if para.alignment in _docx_align:
             p.alignment = _docx_align[para.alignment]
         for run in para.runs:
@@ -135,6 +157,26 @@ def save_docx(doc: Document, dest: Path) -> None:
             if run.underline:    r.underline = True
             if run.superscript:  r.font.superscript = True
             if run.subscript:    r.font.subscript = True
+
+    section = docx.sections[0]
+
+    if doc.header and doc.header.plain_text().strip():
+        section.header.is_linked_to_previous = False
+        # Clear the default empty paragraph python-docx adds
+        for p in section.header.paragraphs:
+            p.clear()
+        _add_para(section.header, doc.header)
+
+    if doc.footer and doc.footer.plain_text().strip():
+        section.footer.is_linked_to_previous = False
+        for p in section.footer.paragraphs:
+            p.clear()
+        _add_para(section.footer, doc.footer)
+
+    for para in doc.paragraphs:
+        if not para.plain_text().strip():
+            continue
+        _add_para(docx, para)
 
     docx.save(dest)
 

@@ -18,7 +18,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from parser import parse, ParseError, Document, Paragraph, TextRun, _detect_ctrl_byte
+from parser import (parse, ParseError, Document, Paragraph, TextRun,
+                    _detect_ctrl_byte, _find_body_start, _find_footer_start)
 from converter import to_txt
 
 
@@ -78,8 +79,14 @@ class TestGoldenFile(unittest.TestCase):
 
     def test_paragraph_count(self):
         """Paragraph count must not silently change."""
-        golden_para_count = len([p for p in self.golden.split('\n\n') if p.strip()])
-        actual_para_count = len([p for p in self.doc.paragraphs if p.plain_text().strip()])
+        # Exclude '---' separator lines that to_txt inserts between sections.
+        golden_para_count = len([p for p in self.golden.split('\n\n')
+                                  if p.strip() and p.strip() != '---'])
+        actual_para_count = (
+            len([p for p in self.doc.paragraphs if p.plain_text().strip()])
+            + (1 if self.doc.header and self.doc.header.plain_text().strip() else 0)
+            + (1 if self.doc.footer and self.doc.footer.plain_text().strip() else 0)
+        )
         self.assertEqual(actual_para_count, golden_para_count)
 
     def test_key_passages_present(self):
@@ -723,6 +730,169 @@ class TestVariableCtrlPrefix(unittest.TestCase):
         text = _plain(data)
         self.assertIn('"a', text)
         self.assertIn('text', text)
+
+
+class TestHeaderFooterExtraction(unittest.TestCase):
+    """Header and footer extraction via position-based section routing."""
+
+    # -----------------------------------------------------------------------
+    # Unit tests for _find_body_start and _find_footer_start
+    # -----------------------------------------------------------------------
+
+    def test_find_body_start_body_only(self):
+        # body-only document: body_start == first_para
+        data = _doc(b'Hello')
+        first_para = data.index(PARA_CTRL)
+        self.assertEqual(_find_body_start(data, 0x61, first_para, 'body'), first_para)
+
+    def test_find_body_start_b5_fallback(self):
+        # When _find_content_start returns first_para (no c4 0e block) and
+        # initial_section != 'body', the B5 != 0x14 scan finds the first block
+        # where B5 is not 0x14 (header/footer zone marker).
+        para_ctrl = PARA_CTRL
+        data = (b'DOC'
+                + para_ctrl + bytes([0x50, 0x0d, 0x14, 0x78, 0x00])  # B5=0x14 → header zone, offset 3
+                + para_ctrl + bytes([0x5a, 0x04, 0x14, 0x78, 0x00])  # B5=0x14 → footer zone, offset 11
+                + para_ctrl + bytes([0x64, 0x00, 0x0a, 0x09, 0x01])  # B5=0x0a → body, offset 19
+                + b'Hello')
+        first_para = 3
+        result = _find_body_start(data, 0x61, first_para, 'header')
+        self.assertEqual(result, 19)
+
+    def test_find_body_start_b3_00_skipped(self):
+        # Blocks with B3=0x00 are layout/transition blocks and must not be
+        # identified as body start even when B5 != 0x14.
+        para_ctrl = PARA_CTRL
+        data = (b'DOC'
+                + para_ctrl + bytes([0x50, 0x0d, 0x14, 0x78, 0x00])  # B5=0x14 header zone, offset 3
+                + para_ctrl + bytes([0x00, 0x00, 0x14, 0x78, 0x00])  # B3=0x00 layout block, offset 11
+                + para_ctrl + bytes([0x64, 0x00, 0x0a, 0x09, 0x01])  # body, offset 19
+                + b'Hello')
+        first_para = 3
+        result = _find_body_start(data, 0x61, first_para, 'header')
+        self.assertEqual(result, 19)
+
+    def test_find_footer_start(self):
+        # After a section break between first_para and body_start, the first
+        # para ctrl block is footer_start.
+        para_ctrl = PARA_CTRL
+        section_break = bytes([0x0e, 0x02])
+        data = (b'DOC'
+                + para_ctrl + bytes([0x50, 0x0d, 0x14, 0x78, 0x00])  # header, offset 3
+                + section_break                                          # break, offset 11
+                + para_ctrl + bytes([0x5a, 0x04, 0x14, 0x78, 0x00])  # footer, offset 13
+                + para_ctrl + bytes([0x64, 0x00, 0x0a, 0x09, 0x01])  # body, offset 21
+                + b'Hello')
+        first_para = 3
+        body_start = 21
+        result = _find_footer_start(data, 0x61, first_para, body_start)
+        self.assertEqual(result, 13)
+
+    def test_find_footer_start_returns_zero_when_no_break(self):
+        # No section break before body_start → returns 0
+        para_ctrl = PARA_CTRL
+        data = (b'DOC'
+                + para_ctrl + bytes([0x50, 0x0d, 0x14, 0x78, 0x00])  # header, offset 3
+                + para_ctrl + bytes([0x64, 0x00, 0x0a, 0x09, 0x01])  # body, offset 11
+                + b'Hello')
+        first_para = 3
+        body_start = 11
+        result = _find_footer_start(data, 0x61, first_para, body_start)
+        self.assertEqual(result, 0)
+
+    # -----------------------------------------------------------------------
+    # Fix: variable ctrl seq must not consume 0x13 (para-break prefix)
+    # -----------------------------------------------------------------------
+
+    def test_variable_ctrl_seq_does_not_consume_formatting_prefix(self):
+        # A variable-type ctrl sequence (22 61 44) where the byte immediately
+        # after the type byte is 0x13 (start of 13 04 50 para break) must leave
+        # that para break intact for the main loop.
+        # Old i+=4 behaviour consumed 0x13, making the para break invisible and
+        # leaking 0x50 ('P') as a printable character.
+        data = _doc(b'First\x22\x61\x44\x13\x04\x50Second')
+        paras = _paras(data)
+        self.assertEqual(len(paras), 2)
+        self.assertIn('First', paras[0])
+        self.assertIn('Second', paras[1])
+
+    # -----------------------------------------------------------------------
+    # Fix: 01 XX XX (3-byte) trailing indent fallback
+    # -----------------------------------------------------------------------
+
+    def test_01_xx_xx_trailing_indent_consumed(self):
+        # A para ctrl block immediately followed by 01 XX XX (doubled printable
+        # pair without the leading 00) must not leak the XX bytes as artefacts.
+        # Observed in HENCOTES first body para: 22 61 0b 64 00 0a 09 01 | 01 27 27
+        data = (b'DOC'
+                + bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x0a, 0x09, 0x01])  # 8-byte ctrl block
+                + bytes([0x01, 0x27, 0x27])                                   # 3-byte trailing indent
+                + b'Hello')
+        text = _plain(data)
+        self.assertIn('Hello', text)
+        self.assertNotIn('\x27\x27', text)   # raw bytes must not appear
+        self.assertNotIn("''", text)          # apostrophe pair artefact must not appear
+
+    # -----------------------------------------------------------------------
+    # Integration tests against real sample files
+    # -----------------------------------------------------------------------
+
+    HENCOTES_FILE   = Path(__file__).parent.parent / 'HENCOTES'
+    BUILDNGS_H_FILE = Path(__file__).parent.parent / 'sample_files' / 'NewFiles - Copy' / 'PCWDISC.008' / 'GROUP.4' / 'HUNSTANW.ORT'
+
+    def _load(self, path):
+        if not path.exists():
+            self.skipTest(f"Sample file not found: {path}")
+        return parse(path.read_bytes())
+
+    def test_hencotes_header_extracted(self):
+        # HENCOTES has a centred header containing "Hencotes"
+        doc = self._load(self.HENCOTES_FILE)
+        self.assertIsNotNone(doc.header, "doc.header should not be None")
+        self.assertIn('Hencotes', doc.header.plain_text())
+
+    def test_hencotes_footer_extracted(self):
+        # HENCOTES has a footer containing the document reference "CND 4.1"
+        doc = self._load(self.HENCOTES_FILE)
+        self.assertIsNotNone(doc.footer, "doc.footer should not be None")
+        self.assertIn('CND 4.1', doc.footer.plain_text())
+
+    def test_hencotes_header_not_in_body(self):
+        # "Hencotes" should appear in the header, not as a stray first body paragraph
+        doc = self._load(self.HENCOTES_FILE)
+        body_text = '\n'.join(p.plain_text() for p in doc.paragraphs)
+        # The body does contain "HENCOTES" (caps) as a heading — check only
+        # the title-cased form is NOT a stray first paragraph on its own.
+        if doc.paragraphs:
+            self.assertNotEqual(doc.paragraphs[0].plain_text().strip(), 'Hencotes')
+
+
+class TestGoldenFileHeaderFooter(unittest.TestCase):
+    """Golden-file checks scoped to header/footer content."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not SAMPLE_FILE.exists():
+            raise unittest.SkipTest(f"Sample file not found: {SAMPLE_FILE}")
+        with open(SAMPLE_FILE, 'rb') as f:
+            cls.doc = parse(f.read())
+        cls.txt = to_txt(cls.doc)
+
+    def test_txt_starts_with_header(self):
+        # TXT output should open with the header text, not body text
+        self.assertTrue(cls := self.txt.split('\n\n')[0],
+                        'Output must not be empty')
+        self.assertIn('Hencotes', self.txt.split('\n\n')[0])
+
+    def test_txt_ends_with_footer(self):
+        # TXT output should close with the footer after a --- separator
+        self.assertIn('CND 4.1', self.txt)
+        self.assertTrue(self.txt.rstrip().endswith('2018'),
+                        'Output should end with footer year')
+
+    def test_txt_has_separators(self):
+        # Header and footer sections are delimited by ---
+        self.assertIn('---', self.txt)
 
 
 if __name__ == '__main__':
