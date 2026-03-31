@@ -1,7 +1,8 @@
 Hencotes
 
-==  PCND 4.1,  4 Oct 2018???0@xxd A xd "#  xd "(
- ''  HENCOTES = Henhouse   domestic hens.
+---
+
+HENCOTES = Henhouse   domestic hens.
 
 The Place Names of Hexham Region	, Vic Watts, Master of Grey College, Durham.  13 Oct. 1992.
    1915. Hexham Urban Council's works and pleasure Grounds Committee agreed to widen the street at Hencotes.
@@ -176,8 +177,7 @@ Register of Electors, 1939, Hencotes Ward, p.10.
    Lynch, Ellen;  Lynch, James;  Clapperton Robert;  Currie, Jessie Morrison.  Burnbrae Cottage.
 
 Register of Electors, 1939.
- 2007.dBURN BRAE MEDICAL GROUP
-   Dr. Tim A. Carney, Dr. Celia D. Helliwell, Dr. F. M.  Noreen Powell, Dr. Eleanor I. Gallagher, Dr. David A. Shovlin, Dr. Paul McClintock.
+ 2007.BURN BRAE MEDICAL GROUP   Dr. Tim A. Carney, Dr. Celia D. Helliwell, Dr. F. M.  Noreen Powell, Dr. Eleanor I. Gallagher, Dr. David A. Shovlin, Dr. Paul McClintock.
 
 Signboard outside the Hencotes surgery, April 2007.
  2008. Hexham's GPs are preparing to move into their fresh premises in the new £23
@@ -209,3 +209,7 @@ showroom at the front, to the west of the archway, vehicles being pushed across 
 
 Register of Electors, p.10.
    1960s. Miss Low was living in Sele House.    1970s. Foster & Low was bought and demolished by Bishops Garages Ltd. in the late 70s or early 80s.  Bishops Garages bought Hexham Motor Company on Battle Hill and demolished it in 1974 and opened up a garage in Alemouth Road.   1988. Hencotes Mews is shown on the  O.S.Map.
+
+---
+
+CND 4.1,  4 Oct 2018

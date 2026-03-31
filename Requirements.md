@@ -52,6 +52,14 @@ These are issues that are understood but not yet resolved. They are good candida
 ## First paragraph / document header
 Largely resolved. `_find_content_start` now iterates through structural section-header blocks (`22 XX 0b` with B3 ≥ `0x80` and B4 = `0e`, e.g. `c4 0e` in standard files and `a6 0e` in `22 6d` variant files), jumping across any following section break to find the first real content paragraph. This eliminated header junk in 185 of 443 sample files with no regressions. A small number of documents (e.g. those with mixed control bytes inside the first content block) may still show minor artefacts in para[0], but the body of the document is unaffected.
 
+## Running header / footer extraction
+Implemented. Headers and footers are now extracted as separate `Paragraph` objects (`doc.header`, `doc.footer`) and rendered appropriately in all three output formats: TXT uses `---` separators, RTF uses `\header`/`\footer` groups, DOCX populates `section.header`/`section.footer`. Confirmed working on HENCOTES (header + footer) and BUILDNGS.H (footer only).
+
+### Page number zone in footers
+Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page number zone** followed by a **right-aligned document reference zone**. The page number zone is identified by a `11 06` (centre alignment) code followed by a `3d 3d` doubled-pair marker (`==`) and a page-number token sequence. The document reference zone begins after a `10 07` (right alignment) code and contains the human-authored text (e.g. `CND 4.1,  4 Oct 2018`).
+
+The `==` doubled pair in the centre zone is a LocoScript 2 page number placeholder — at print time LocoScript would have expanded it to the actual page number. The surrounding control bytes (`22 61 44`, `13 04 50` etc.) are part of the page number token machinery. Since page numbers cannot be resolved statically, the entire page number zone is silently discarded; only the document reference text is extracted as `doc.footer`. A future enhancement could render the page number zone as a `[PAGE]` placeholder.
+
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
 

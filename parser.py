@@ -89,6 +89,8 @@ class Document:
     """Parsed Locoscript 2 document."""
     def __init__(self):
         self.paragraphs: list[Paragraph] = []
+        self.header: Paragraph | None = None
+        self.footer: Paragraph | None = None
 
     def plain_text(self) -> str:
         return '\n\n'.join(p.plain_text() for p in self.paragraphs if p.plain_text().strip())
@@ -106,6 +108,36 @@ def _detect_ctrl_byte(data: bytes) -> int:
         if data[i] == 0x22 and data[i + 2] == 0x0b:
             return data[i + 1]
     return 0x61
+
+
+# The layout section always starts at 0x5A0 (right after the 10 × 73-byte
+# layout table that begins at 0x2C6).  The byte at offset +5 from the
+# [0x60–0x9F] 0x00 anchor encodes the type of the FIRST content section.
+_LAYOUT_SECTION_START = 0x5A0
+
+
+def _section_type_at(data: bytes, pos: int, window: int = 80) -> str:
+    """Return the section type ('header', 'footer', or 'body') for the section
+    whose layout block starts at or shortly after *pos*.
+
+    Scans up to *window* bytes forward for a [0x60–0x9F] 0x00 anchor byte.
+    The byte at anchor + 5 encodes the section type:
+      0x00 → 'header'
+      0x01 → 'footer'
+      anything else → 'body'
+    Returns 'body' if no anchor is found.
+    """
+    end = min(pos + window, len(data) - 1)
+    for i in range(pos, end):
+        if 0x60 <= data[i] <= 0x9F and data[i + 1] == 0x00:
+            if i + 5 < len(data):
+                marker = data[i + 5]
+                if marker == 0x00:
+                    return 'header'
+                if marker == 0x01:
+                    return 'footer'
+            return 'body'
+    return 'body'
 
 
 def _find_content_start(data: bytes, ctrl_byte: int = 0x61) -> int:
@@ -143,6 +175,67 @@ def _find_content_start(data: bytes, ctrl_byte: int = 0x61) -> int:
         pos = next_para
 
     return pos
+
+
+def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_section: str) -> int:
+    """Return the byte offset where body content begins.
+
+    For body-only documents (``initial_section == 'body'``) this is
+    ``first_para``.  For documents with header/footer pre-body sections,
+    ``_find_content_start`` is tried first (reliable when a ``c4 0e``
+    structural block is present near the file start).  If it returns
+    ``first_para`` (i.e. did not advance), fall back to scanning forward for
+    the first ``22 XX 0b`` block satisfying all of:
+
+    - B3 ≠ ``0x00`` (not a layout/transition block)
+    - B5 ≠ ``0x14`` (not a header/footer zone block)
+    - NOT (B3 ≥ ``0x80`` AND B4 == ``0x0e``) (not a structural section block)
+    """
+    if initial_section == 'body':
+        return first_para
+
+    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    n = len(data)
+
+    candidate = _find_content_start(data, ctrl_byte)
+    if candidate != first_para:
+        return candidate
+
+    # Fallback: B5 ≠ 0x14 scan
+    pos = first_para
+    while True:
+        if pos + 5 < n:
+            b3 = data[pos + 3]
+            b4 = data[pos + 4]
+            b5 = data[pos + 5]
+            if b3 != 0x00 and b5 != 0x14 and not (b3 >= 0x80 and b4 == 0x0e):
+                return pos
+        next_pos = data.find(para_ctrl, pos + 3)
+        if next_pos < 0:
+            break
+        pos = next_pos
+
+    return first_para
+
+
+def _find_footer_start(data: bytes, ctrl_byte: int, first_para: int, body_start: int) -> int:
+    """Return the byte offset of the first footer paragraph content block.
+
+    Only meaningful when ``initial_section == 'header'`` (header + footer
+    case).  Scans from ``first_para`` to ``body_start`` for a section break
+    (``0e 01`` / ``0e 02``); the first ``22 XX 0b`` after that break (and
+    before ``body_start``) is ``footer_start``.  Returns ``0`` if not found.
+    """
+    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    n = len(data)
+
+    for j in range(first_para, min(body_start, n - 1)):
+        if data[j] == SECTION_BREAK and data[j + 1] in SECTION_BREAK_TYPES:
+            nxt = data.find(para_ctrl, j + 2)
+            if 0 < nxt < body_start:
+                return nxt
+            break
+    return 0
 
 
 def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
@@ -192,8 +285,14 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
         else:
             i += 8
     else:
-        # Variable structure: skip prefix + type + 1 extra byte
-        i += 4
+        # Variable structure: skip prefix + type byte (3 bytes).
+        # The spec says "+1 extra parameter byte" but using i += 4 would
+        # consume 0x13 before the exclusion logic can protect it — leaving
+        # 13 04 xx formatting sequences unrecognised.  Using i += 3 and
+        # letting the non-printable loop handle parameter bytes (which
+        # already excludes 0x13 and WORD_SEP) is equivalent for all other
+        # cases and correctly stops before a formatting sequence.
+        i += 3
         # Skip any non-printable parameter bytes (but NOT word separators or
         # 0x13 which may start a 13 04 xx formatting sequence)
         while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
@@ -221,8 +320,26 @@ def parse(data: bytes) -> Document:
     para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
 
     doc = Document()
-    i = _find_content_start(data, ctrl_byte)
     n = len(data)
+
+    # Determine what type of section begins at the first content block.
+    # The layout section (0x5A0) always follows the 10 × 73-byte layout table
+    # and its byte at offset +5 encodes: 0x00 = header, 0x01 = footer, else = body.
+    initial_section = _section_type_at(data, _LAYOUT_SECTION_START)
+    current_section = initial_section
+
+    # Start from the very first paragraph content marker so that header and
+    # footer sections are parsed (not skipped) and routed appropriately.
+    try:
+        first_para = data.index(para_ctrl)
+    except ValueError:
+        first_para = 3
+
+    body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section)
+    footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start)
+                    if initial_section == 'header' else 0)
+
+    i = first_para
 
     current_para = Paragraph()
     current_text: list[str] = []
@@ -244,15 +361,36 @@ def parse(data: bytes) -> Document:
     def flush_para():
         nonlocal current_para
         flush_run()
-        if any(r.text.strip() for r in current_para.runs):
+        if not any(r.text.strip() for r in current_para.runs):
+            current_para = Paragraph()
+            return
+        if current_section == 'header':
+            doc.header = current_para
+        elif current_section == 'footer':
+            doc.footer = current_para
+        else:
             doc.paragraphs.append(current_para)
         current_para = Paragraph()
 
     while i < n:
+        # --- Pre-body NUL terminator: 00 00 ---
+        # Footer text ends with two consecutive 0x00 bytes before the binary
+        # layout blob.  Flush the accumulated footer paragraph and jump forward
+        # to the next paragraph content block.  Only active before body_start;
+        # safe because the only other 0x00-containing pattern (trailing indent
+        # 00 01 XX XX) has a second byte of 0x01, not 0x00.
+        if i < body_start and data[i] == 0x00 and i + 1 < n and data[i + 1] == 0x00:
+            if any(c.strip() for c in current_text):
+                flush_run()
+                flush_para()
+            next_para = data.find(para_ctrl, i + 2)
+            i = next_para if next_para >= 0 else n
+            continue
+
         # --- Section / page break: 0e 01 or 0e 02 ---
         # Followed by a binary metadata block; skip ahead to the next paragraph.
-        # Any text accumulated before this point (e.g. from the document heading
-        # area) is discarded — it is structural, not body content.
+        # Peek at the layout block immediately after the break to determine the
+        # type of the next section.
         if data[i] == SECTION_BREAK and i+1 < n and data[i+1] in SECTION_BREAK_TYPES:
             flush_run()
             flush_para()
@@ -381,10 +519,30 @@ def parse(data: bytes) -> Document:
                 current_text.append(chr(ctrl_byte))
                 i += 2
             else:
+                if ctrl_type == 0x0b:
+                    # Position-based section routing: update current_section
+                    # based on where this paragraph content block sits in the file.
+                    if i >= body_start:
+                        current_section = 'body'
+                    elif footer_start > 0 and i >= footer_start:
+                        current_section = 'footer'
+                    elif initial_section != 'body':
+                        current_section = initial_section
+                    # B3=0x00 in pre-body zone: layout/transition block containing
+                    # no body text — flush any accumulated text and skip forward.
+                    if i < body_start and i + 3 < n and data[i + 3] == 0x00:
+                        flush_run()
+                        flush_para()
+                        next_ctrl = data.find(para_ctrl, i + 3)
+                        i = next_ctrl if next_ctrl >= 0 else n
+                        continue
                 i = _skip_ctrl_sequence(data, i, ctrl_byte)
                 # Skip trailing indent metadata: 00 01 + doubled printable pair
                 if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
                     i += 4
+                # Fallback: 01 XX XX (3-byte) trailing indent (e.g. HENCOTES first body para)
+                elif i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= 0x20:
+                    i += 3
             continue
 
         # --- Word separator: 02 ---
