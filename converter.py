@@ -83,7 +83,8 @@ def _rtf_para(para: 'Paragraph') -> str:
     if not parts:
         return ''
     align = _rtf_align.get(para.alignment, '')
-    return r'\pard' + align + ' ' + ' '.join(parts) + r'\par'
+    tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
+    return r'\pard' + align + tab_stops + ' ' + ' '.join(parts) + r'\par'
 
 
 def to_rtf(doc: Document) -> str:
@@ -129,8 +130,10 @@ def save_rtf(doc: Document, dest: Path) -> None:
 def save_docx(doc: Document, dest: Path) -> None:
     try:
         from docx import Document as DocxDocument
-        from docx.shared import Pt
+        from docx.shared import Pt, Twips
         from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
     except ImportError as e:
         raise RuntimeError(
             "python-docx is required for DOCX output. "
@@ -144,10 +147,24 @@ def save_docx(doc: Document, dest: Path) -> None:
         'right':  WD_ALIGN_PARAGRAPH.RIGHT,
     }
 
+    def _apply_tab_stops(paragraph, tab_stops: list) -> None:
+        """Add explicit left tab stops (in twips) to a paragraph's XML."""
+        if not tab_stops:
+            return
+        pPr = paragraph._p.get_or_add_pPr()
+        tabs_el = OxmlElement('w:tabs')
+        for twips in sorted(set(tab_stops)):
+            tab = OxmlElement('w:tab')
+            tab.set(qn('w:val'), 'left')
+            tab.set(qn('w:pos'), str(twips))
+            tabs_el.append(tab)
+        pPr.append(tabs_el)
+
     def _add_para(container, para):
         p = container.add_paragraph()
         if para.alignment in _docx_align:
             p.alignment = _docx_align[para.alignment]
+        _apply_tab_stops(p, para.tab_stops)
         for run in para.runs:
             if not run.text.strip():
                 continue

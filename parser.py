@@ -77,6 +77,7 @@ class Paragraph:
     def __init__(self):
         self.runs: list[TextRun] = []
         self.alignment: str = 'left'  # 'left', 'centre', 'right'
+        self.tab_stops: list[int] = []  # explicit tab stop positions in twips
 
     def plain_text(self) -> str:
         return ''.join(r.text for r in self.runs)
@@ -99,16 +100,28 @@ class Document:
 def _detect_ctrl_byte(data: bytes) -> int:
     """Return the control-sequence discriminator byte for this file.
 
-    Scans for the first ``22 XX 0b`` occurrence and returns ``XX``.
+    Counts all ``22 XX 0b`` occurrences and returns the most frequent ``XX``.
     Standard Locoscript 2 DOC files use ``0x61`` (``"a``); some files
-    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``).
+    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``); a third
+    variant (e.g. ``Memorial.002``) uses ``0x42`` (``"B``) in the body while
+    the header/transition zone contains a handful of ``22 61 0b`` blocks.
+    Using the most-frequent value handles all three cases correctly.
     Returns ``0x61`` if no matching sequence is found.
     """
+    from collections import Counter
+    counts: Counter = Counter()
     for i in range(len(data) - 2):
         if data[i] == 0x22 and data[i + 2] == 0x0b:
-            return data[i + 1]
-    return 0x61
+            counts[data[i + 1]] += 1
+    return counts.most_common(1)[0][0] if counts else 0x61
 
+
+# Layout table: 10 × 73-byte entries starting at 0x2C6.
+# Entry offset +11 = scale pitch byte (0x18 = 10cpi = 0.1 inch per unit).
+# Entry offset +33..+47 = 15 tab stop absolute positions (scale pitch units).
+# Conversion: twips_per_unit = scale_pitch_byte × 6  (e.g. 0x18 × 6 = 144).
+_LAYOUT_TABLE_START = 0x2C6
+_LAYOUT_ENTRY_SIZE  = 73
 
 # The layout section always starts at 0x5A0 (right after the 10 × 73-byte
 # layout table that begins at 0x2C6).  The byte at offset +5 from the
@@ -282,24 +295,41 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # Another control prefix starts at the indent-byte position;
             # skip 7 bytes and let the main loop handle that control sequence.
             i += 7
+        elif i + 8 < n and data[i+5] == 0x0f and data[i+6] == 0x04:
+            # SI tab indicator embedded in paragraph header (B5=0x0f B6=0x04):
+            # structure is 22 XX 0b B3 B4 0f 04 B1 B2 [01 PP PP] → content.
+            # Skip 9 bytes (header + B3 B4 + 0f 04 + B1 B2), then consume the
+            # optional 01-separator and identical-byte indent pair.
+            i += 9
+            if i < n and data[i] == 0x01:
+                i += 1
+                if i + 1 < n and data[i] == data[i + 1]:
+                    i += 2
         else:
             i += 8
     else:
         # Variable structure: skip prefix + type byte (3 bytes).
-        # The spec says "+1 extra parameter byte" but using i += 4 would
-        # consume 0x13 before the exclusion logic can protect it — leaving
-        # 13 04 xx formatting sequences unrecognised.  Using i += 3 and
-        # letting the non-printable loop handle parameter bytes (which
-        # already excludes 0x13 and WORD_SEP) is equivalent for all other
-        # cases and correctly stops before a formatting sequence.
-        i += 3
-        # Skip any non-printable parameter bytes (but NOT word separators or
-        # 0x13 which may start a 13 04 xx formatting sequence)
-        while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
-            i += 1
-        # Skip doubled-pair indent markers (e.g. 0x54 0x54, 0x3d 0x3d)
-        while i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
-            i += 2
+        # Special case: type == ctrl_byte (e.g. "22 61 61") is a self-referential
+        # sequence that always appears as binary layout/page metadata, never as body
+        # text.  Skip directly to the next paragraph content block.
+        if ctrl_type == ctrl_byte:
+            next_block = data.find(para_ctrl, i + 3)
+            i = next_block if next_block >= 0 else n
+        else:
+            # The spec says "+1 extra parameter byte" but using i += 4 would
+            # consume 0x13 before the exclusion logic can protect it — leaving
+            # 13 04 xx formatting sequences unrecognised.  Using i += 3 and
+            # letting the non-printable loop handle parameter bytes (which
+            # already excludes 0x13 and WORD_SEP) is equivalent for all other
+            # cases and correctly stops before a formatting sequence.
+            i += 3
+            # Skip any non-printable parameter bytes (but NOT word separators or
+            # 0x13 which may start a 13 04 xx formatting sequence)
+            while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
+                i += 1
+            # Skip doubled-pair indent markers (e.g. 0x54 0x54, 0x3d 0x3d)
+            while i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
+                i += 2
 
     return i
 
@@ -318,6 +348,12 @@ def parse(data: bytes) -> Document:
     ctrl_byte = _detect_ctrl_byte(data)
     ctrl_prefix = bytes([0x22, ctrl_byte])
     para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+
+    # Scale pitch from layout table entry 0 (offset +11).
+    # twips_per_unit = scale_pitch_byte × 6 (e.g. 0x18 × 6 = 144 twips = 0.1").
+    _scale_pitch = (data[_LAYOUT_TABLE_START + 11]
+                    if len(data) > _LAYOUT_TABLE_START + 11 else 0x18)
+    _twips_per_unit = _scale_pitch * 6
 
     doc = Document()
     n = len(data)
@@ -379,12 +415,19 @@ def parse(data: bytes) -> Document:
         # to the next paragraph content block.  Only active before body_start;
         # safe because the only other 0x00-containing pattern (trailing indent
         # 00 01 XX XX) has a second byte of 0x01, not 0x00.
+        # If no content has been accumulated the 00 00 pair is a layout byte
+        # that may be followed by text (e.g. "Place: HEXHAM." in MEMORIAL-
+        # style documents); skip only the two NUL bytes and keep parsing.
         if i < body_start and data[i] == 0x00 and i + 1 < n and data[i + 1] == 0x00:
-            if any(c.strip() for c in current_text):
+            has_content = any(c.strip() for c in current_text) or any(
+                r.text.strip() for r in current_para.runs)
+            if has_content:
                 flush_run()
                 flush_para()
-            next_para = data.find(para_ctrl, i + 2)
-            i = next_para if next_para >= 0 else n
+                next_para = data.find(para_ctrl, i + 2)
+                i = next_para if next_para >= 0 else n
+            else:
+                i += 2
             continue
 
         # --- Section / page break: 0e 01 or 0e 02 ---
@@ -432,8 +475,14 @@ def parse(data: bytes) -> Document:
             continue
 
         # --- Tab sequence: 09 05 01 + 2 param bytes ---
+        # The first param byte (XX) encodes the explicit tab column in scale
+        # pitch units (XX × twips_per_unit gives the RTF \tx position).
+        # A zero value means no position is specified; skip silently.
         if data[i:i+3] == TAB_SEQ:
             flush_run()
+            xx = data[i + 3] if i + 3 < n else 0
+            if xx > 0:
+                current_para.tab_stops.append(xx * _twips_per_unit)
             current_text.append('\t')
             i += 5  # 09 05 01 + 2 indent/param bytes
             continue
@@ -460,7 +509,11 @@ def parse(data: bytes) -> Document:
             # Skip leading non-printable param bytes (same rule as variable ctrl handler)
             while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
                 i += 1
-            # Skip up to 2 printable tab-stop encoding bytes
+            # B1 is the first printable byte: the indent/tab column in scale pitch units.
+            # Record it as an explicit tab stop (twips) before consuming both B1 and B2.
+            if is_tab and i < n and 0x20 <= data[i] <= 0x7E:
+                current_para.tab_stops.append(data[i] * _twips_per_unit)
+            # Skip up to 2 printable tab-stop encoding bytes (B1 and B2)
             for _ in range(2):
                 if i < n and 0x20 <= data[i] <= 0x7E:
                     i += 1
@@ -524,6 +577,21 @@ def parse(data: bytes) -> Document:
                     # based on where this paragraph content block sits in the file.
                     if i >= body_start:
                         current_section = 'body'
+                        # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
+                        # the body signals a paragraph boundary (these documents use
+                        # 22 XX 0b pairs rather than 13 04 50 between paragraphs).
+                        # B3=0xe8, B4=0x05 is the distinctive first-block signature.
+                        if i + 4 < n and data[i + 3] == 0xe8 and data[i + 4] == 0x05:
+                            flush_run()
+                            flush_para()
+                        # Page break indicator: B5=0x07 means a binary page-layout
+                        # block follows (seen in MEMORIAL-style documents as
+                        # "22 XX 0b B3 B4 07 03 ...").  Jump to the next paragraph
+                        # content block, skipping the binary metadata.
+                        if i + 5 < n and data[i + 5] == 0x07:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
                     elif footer_start > 0 and i >= footer_start:
                         current_section = 'footer'
                     elif initial_section != 'body':
