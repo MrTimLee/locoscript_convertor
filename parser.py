@@ -77,6 +77,7 @@ class Paragraph:
     def __init__(self):
         self.runs: list[TextRun] = []
         self.alignment: str = 'left'  # 'left', 'centre', 'right'
+        self.tab_stops: list[int] = []  # explicit tab stop positions in twips
 
     def plain_text(self) -> str:
         return ''.join(r.text for r in self.runs)
@@ -99,16 +100,28 @@ class Document:
 def _detect_ctrl_byte(data: bytes) -> int:
     """Return the control-sequence discriminator byte for this file.
 
-    Scans for the first ``22 XX 0b`` occurrence and returns ``XX``.
+    Counts all ``22 XX 0b`` occurrences and returns the most frequent ``XX``.
     Standard Locoscript 2 DOC files use ``0x61`` (``"a``); some files
-    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``).
+    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``); a third
+    variant (e.g. ``Memorial.002``) uses ``0x42`` (``"B``) in the body while
+    the header/transition zone contains a handful of ``22 61 0b`` blocks.
+    Using the most-frequent value handles all three cases correctly.
     Returns ``0x61`` if no matching sequence is found.
     """
+    from collections import Counter
+    counts: Counter = Counter()
     for i in range(len(data) - 2):
         if data[i] == 0x22 and data[i + 2] == 0x0b:
-            return data[i + 1]
-    return 0x61
+            counts[data[i + 1]] += 1
+    return counts.most_common(1)[0][0] if counts else 0x61
 
+
+# Layout table: 10 × 73-byte entries starting at 0x2C6.
+# Entry offset +11 = scale pitch byte (0x18 = 10cpi = 0.1 inch per unit).
+# Entry offset +33..+47 = 15 tab stop absolute positions (scale pitch units).
+# Conversion: twips_per_unit = scale_pitch_byte × 6  (e.g. 0x18 × 6 = 144).
+_LAYOUT_TABLE_START = 0x2C6
+_LAYOUT_ENTRY_SIZE  = 73
 
 # The layout section always starts at 0x5A0 (right after the 10 × 73-byte
 # layout table that begins at 0x2C6).  The byte at offset +5 from the
@@ -319,6 +332,12 @@ def parse(data: bytes) -> Document:
     ctrl_prefix = bytes([0x22, ctrl_byte])
     para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
 
+    # Scale pitch from layout table entry 0 (offset +11).
+    # twips_per_unit = scale_pitch_byte × 6 (e.g. 0x18 × 6 = 144 twips = 0.1").
+    _scale_pitch = (data[_LAYOUT_TABLE_START + 11]
+                    if len(data) > _LAYOUT_TABLE_START + 11 else 0x18)
+    _twips_per_unit = _scale_pitch * 6
+
     doc = Document()
     n = len(data)
 
@@ -432,8 +451,14 @@ def parse(data: bytes) -> Document:
             continue
 
         # --- Tab sequence: 09 05 01 + 2 param bytes ---
+        # The first param byte (XX) encodes the explicit tab column in scale
+        # pitch units (XX × twips_per_unit gives the RTF \tx position).
+        # A zero value means no position is specified; skip silently.
         if data[i:i+3] == TAB_SEQ:
             flush_run()
+            xx = data[i + 3] if i + 3 < n else 0
+            if xx > 0:
+                current_para.tab_stops.append(xx * _twips_per_unit)
             current_text.append('\t')
             i += 5  # 09 05 01 + 2 indent/param bytes
             continue
@@ -460,7 +485,11 @@ def parse(data: bytes) -> Document:
             # Skip leading non-printable param bytes (same rule as variable ctrl handler)
             while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
                 i += 1
-            # Skip up to 2 printable tab-stop encoding bytes
+            # B1 is the first printable byte: the indent/tab column in scale pitch units.
+            # Record it as an explicit tab stop (twips) before consuming both B1 and B2.
+            if is_tab and i < n and 0x20 <= data[i] <= 0x7E:
+                current_para.tab_stops.append(data[i] * _twips_per_unit)
+            # Skip up to 2 printable tab-stop encoding bytes (B1 and B2)
             for _ in range(2):
                 if i < n and 0x20 <= data[i] <= 0x7E:
                     i += 1

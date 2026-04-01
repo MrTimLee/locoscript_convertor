@@ -284,6 +284,87 @@ class TestSISequences(unittest.TestCase):
         self.assertIn('Content', text)
 
 
+class TestTabStopPositions(unittest.TestCase):
+    """Tab stop column positions are captured from inline sequences."""
+
+    def test_09_05_01_records_tab_stop_twips(self):
+        # 09 05 01 1c 1c → XX=0x1c=28 at default scale pitch 0x18 → 28×144=4032 twips
+        data = _doc(b'Text\x09\x05\x01\x1c\x1cMore')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertIn(4032, para.tab_stops)
+
+    def test_09_05_01_zero_param_no_stop_recorded(self):
+        # XX=0x00 means no position → tab_stops must stay empty
+        data = _doc(b'Col1\x09\x05\x01\x00\x00Col2')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertEqual(para.tab_stops, [])
+
+    def test_0f_04_records_tab_stop_twips(self):
+        # 0f 04 27 61 01 2a 2a → B1=0x27=39 (printable) → 39×144=5616 twips
+        # B1 must be >= 0x20 (printable); values below 0x20 are non-printable
+        # param bytes that precede B1 and are skipped by the handler.
+        data = _doc(b'Before\x0f\x04\x27\x61\x01\x2a\x2aAfter')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertIn(0x27 * 144, para.tab_stops)  # 39×144=5616
+
+    def test_multiple_tab_stops_per_paragraph(self):
+        # Two 09 05 01 sequences in one paragraph record two stops
+        data = _doc(b'A\x09\x05\x01\x10\x10B\x09\x05\x01\x20\x20C')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertIn(0x10 * 144, para.tab_stops)  # 16×144=2304
+        self.assertIn(0x20 * 144, para.tab_stops)  # 32×144=4608
+
+    def test_tab_stops_not_shared_between_paragraphs(self):
+        # Tab stops on one paragraph must not bleed into the next
+        data = _doc(
+            b'A\x09\x05\x01\x1c\x1cB'
+            b'\x13\x04\x50'                         # paragraph break
+            b'C\x09\x05\x01\x00\x00D'
+        )
+        doc = parse(data)
+        self.assertIn(4032, doc.paragraphs[0].tab_stops)
+        self.assertEqual(doc.paragraphs[1].tab_stops, [])
+
+    def test_rtf_emits_tx_for_tab_stop(self):
+        from converter import to_rtf
+        data = _doc(b'Text\x09\x05\x01\x1c\x1cMore')
+        out = to_rtf(parse(data))
+        self.assertIn(r'\tx4032', out)
+
+    def test_rtf_no_tx_when_no_tab_stops(self):
+        from converter import to_rtf
+        data = _doc(b'Hello\x13\x04\x50')
+        out = to_rtf(parse(data))
+        self.assertNotIn(r'\tx', out)
+
+    def test_rtf_tx_appears_before_content(self):
+        from converter import to_rtf
+        data = _doc(b'Col1\x09\x05\x01\x1c\x1cCol2')
+        out = to_rtf(parse(data))
+        self.assertLess(out.index(r'\tx4032'), out.index('Col1'))
+
+    def test_docx_tab_stop_written_to_xml(self):
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        data = _doc(b'Col1\x09\x05\x01\x1c\x1cCol2')
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(parse(data), tmp)
+            result = DocxDocument(tmp)
+            # Check the XML of the first paragraph for a w:tab element with w:pos="4032"
+            para_xml = result.paragraphs[0]._p.xml
+            self.assertIn('w:pos="4032"', para_xml)
+        finally:
+            os.unlink(tmp)
+
+
 class TestIndentMetadata(unittest.TestCase):
 
     def test_09_00_01_skipped(self):
@@ -682,6 +763,15 @@ class TestVariableCtrlPrefix(unittest.TestCase):
     def test_detect_ctrl_byte_fallback(self):
         # No 22 XX 0b sequence at all → default 0x61
         self.assertEqual(_detect_ctrl_byte(b'DOC' + b'\x00' * 10), 0x61)
+
+    def test_detect_ctrl_byte_prefers_most_frequent(self):
+        # When header uses 0x61 but body uses 0x42 (like Memorial.002),
+        # the most-frequent value (0x42) should be returned, not the first (0x61).
+        para_ctrl_61 = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        para_ctrl_42 = bytes([0x22, 0x42, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        # 1× 0x61 (header) + 3× 0x42 (body) → most frequent is 0x42
+        data = MAGIC + para_ctrl_61 + para_ctrl_42 * 3 + b'Hello'
+        self.assertEqual(_detect_ctrl_byte(data), 0x42)
 
     def test_22_6d_file_produces_content(self):
         # A 22 6d file must yield the body text rather than garbage

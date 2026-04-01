@@ -43,14 +43,17 @@ xxd <filename> > hex_dump
 
 ## Task Workflow
 
-When implementing a task from `Tasks.md`:
+When implementing a task, either from `Tasks.md` or involving any files tracked in the repo:
 
-1. Pick a task from the open items in `Tasks.md`
+0. Read Tasks.md and look for open tasks.
+1. Pick task and confirm understanding and agree is the next thing to do
 2. Create a feature branch (e.g. `git checkout -b feature/my-task`)
-3. Develop and test the code
-4. Update documentation (Requirements.md, Tasks.md, etc.)
-5. Raise a PR
-6. Commit / merge
+3. Develop fix
+4. Run tests and confirm all pass
+5. Update documentation (Requirements.md, Tasks.md, etc.)
+6. Raise PR and tell me it's ready for review
+7. Commit / merge
+8. Tidy up any stale branches
 
 Do **not** commit task work directly to `main`.
 

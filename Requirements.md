@@ -101,7 +101,25 @@ Every valid Locoscript 2 file begins with a three-byte ASCII magic number. Two m
 | `DOC` | `44 4f 43` | Supported — full parser implemented |
 | `JOY` | `4a 4f 59` | Not currently supported — see Known Limitations |
 
-For `DOC` files, content parsing begins at the first occurrence of the paragraph content marker `22 61 0b` — everything before it is a document header containing page layout and section metadata that is not needed for text extraction.
+For `DOC` files, content parsing begins at the first occurrence of the paragraph content marker `22 XX 0b` — everything before it is a document header containing page layout and section metadata that is not needed for text extraction.
+
+### Layout Table (`0x2C6`)
+
+The layout table at `0x2C6` contains 10 × 73-byte entries describing page layout configurations. Key fields in each entry:
+
+| Entry offset | Field | Notes |
+|---|---|---|
+| +11 | Scale pitch byte `P` | `0x18` = 10cpi; `0x14` = 12cpi |
+| +13 | Point size × 10 | `0x78` = 12pt |
+| +33..+47 | 15 tab stop positions | Absolute positions in scale pitch units; `0x00` = unused |
+
+**Scale pitch unit conversion:**
+```
+twips_per_unit = P × 6
+```
+For `P = 0x18` (10cpi): `twips_per_unit = 144` (= 0.1 inch × 1440 twips/inch ✓)
+
+Tab stop values read from +33..+47 are absolute positions from the left margin. A value of `0x18` (24) at 10cpi = 24 × 0.1" = 2.4" (the LocoScript default tab stop spacing). Custom values have been confirmed in real files (e.g. `Memorial.002` uses `0x27`, `0x2c`, `0x31`).
 
 `JOY` files use a different binary structure (no `22 61 0b` anchor, different word separator and paragraph break bytes) and require a separate parser. Attempting to parse a JOY file raises a `ParseError` with an informative message.
 
@@ -139,7 +157,7 @@ Three-byte sequence that begins an italic text run. Italic state is tracked and 
 Three-byte sequence. If italic is currently active it acts as "italic off" (end of italic run). If italic is not active it emits a hard line break (`\n`) within the current paragraph.
 
 ### Tab / Citation Indent — `09 05 01` + 2 param bytes
-Five bytes total. Emits a tab character (`\t`) in the output. The two trailing bytes are indent parameters and are consumed but not output.
+Five bytes total. Emits a tab character (`\t`) in the output. The first param byte (`XX`) encodes the **explicit tab column position** in scale pitch units (`XX × twips_per_unit` gives the RTF `\tx` position). A zero value means no explicit position. The second param byte is always the same value (doubled-pair pattern) and is consumed along with the first.
 
 ### Paragraph Indent Marker — `08 05 01` + 2 param bytes
 Five bytes total. Structural paragraph indent/style marker. Emits nothing. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
@@ -197,12 +215,14 @@ Two-byte prefix followed by optional parameter bytes:
 ```
 0f [04|05]
 [optional non-printable param bytes]
-[up to 2 printable tab-stop encoding bytes]
+B1  B2   ← two printable bytes (B1 = column position, B2 = body ctrl_byte)
 [optional: 01 separator + identical-byte indent pair]
 → content
 ```
 
 `0f 04` emits a tab character (`\t`). `0f 05` is a hanging-indent marker that emits nothing. In both cases all parameter and indent bytes are consumed.
+
+**B1** encodes the intended tab/indent column in scale pitch units (same unit as the `09 05 01` param byte). **B2** is always equal to the body ctrl_byte of the file (`0x61`, `0x6d`, or `0x42`) and acts as a structural delimiter. The parser records `B1 × twips_per_unit` as an explicit tab stop on the paragraph for RTF/DOCX rendering.
 
 ### Indent Metadata — `09 00 01` [+ doubled printable pair]
 Note: `09 00` is now recognised as bold-off (see Inline Formatting above). The trailing `01 XX XX` params are consumed as part of the bold-off handler. This entry is retained for historical reference only.
@@ -213,9 +233,19 @@ A two-byte sequence where `0e` is followed by `01` (section break) or `02` (page
 ### Hyphen / Extra Space — `06`
 Contextual byte. Emits a hyphen (`-`) when it falls between two printable text characters. Emits a space when adjacent to a word separator (`02`), another `06`, or a non-printable preceding byte.
 
-## Control Sequence Prefix — `22 61` / `22 6d`
+## Control Sequence Prefix — `22 61` / `22 6d` / `22 42`
 
-The two-byte sequence `22 XX` introduces a structured control sequence. The third byte is the control type. The discriminator byte `XX` is `0x61` (`"a`) in most files, but some files (e.g. `BUILDNGS.A-C`, `MARKETPL.*`) use `0x6d` (`"m`) instead. The parser detects the variant by scanning for the first `22 XX 0b` occurrence in the file. When `XX` follows `22` and is itself followed by a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code.
+The two-byte sequence `22 XX` introduces a structured control sequence. The third byte is the control type. Three values of the discriminator byte `XX` have been confirmed:
+
+| `XX` | Files | Notes |
+|------|-------|-------|
+| `0x61` (`"a`) | Standard DOC files | Most common |
+| `0x6d` (`"m`) | `BUILDNGS.A-C`, `MARKETPL.*` | Second variant |
+| `0x42` (`"B`) | `Memorial.002` | Third variant — body only; header zone uses `0x61` |
+
+The parser detects the correct variant by counting all `22 XX 0b` occurrences and returning the **most frequent** `XX` (not the first). This correctly handles files like `Memorial.002` where the header/transition zone contains a handful of `22 61 0b` blocks before the `22 42 0b` body content begins.
+
+When `XX` follows `22` and is itself followed by a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code.
 
 ### Control Type `0b` — Paragraph Content Block
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:
