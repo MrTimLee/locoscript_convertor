@@ -263,12 +263,17 @@ Several structural variants exist:
 | `B6..B8` = `78 00 01` | Extended indent variant; followed by a doubled printable pair | Skip 11 bytes |
 | `B3 >= 0x80` and `B4` = `0e` | Structural section/layout header block; never contains body text (e.g. `c4 0e` in standard files, `a6 0e` / `88 0e` / `84 0e` in `22 6d` variant files; low-B3 values such as `3a 0e` are normal content blocks) | Skip to next `22 XX 0b` |
 | `B4 B5 B6` = `0a 09 00` | Tab-indent variant; followed by `01` + doubled printable pair | Skip 11 bytes |
+| `B5` = `0f` and `B6` = `0x04` | SI tab indicator embedded in paragraph header; structure is `B3 B4 0f 04 B1 B2 [01 PP PP]` where B1 = column position and B2 = ctrl_byte (e.g. `88 02 0f 04 3b 61 01 0b 0b` in MEMORIAL.002 column lists) | Skip 9 bytes then consume optional `01` separator + identical-byte indent pair |
 | `B7 B8` = `13 04` | Formatting prefix one byte later — leave for main loop | Skip 7 bytes |
 | `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
 | (default) | Standard 8-byte block | Skip 8 bytes |
 
+**MEMORIAL-style paragraph breaks (body only):** In some documents (e.g. `MEMORIAL.002`) paragraphs are delimited by `22 XX 0b` block pairs rather than `13 04 50`. The distinctive signature is `B3 = 0xe8` and `B4 = 0x05` — when this appears in the body the parser flushes the current paragraph. A page-break variant adds `B5 = 0x07`, which also triggers a jump past the binary layout block that follows.
+
 ### Other Control Types
 All other control types (`0c`, `0d`, `36`, etc.) follow a variable-length structure: skip the 2-byte prefix + type byte + 1 extra parameter byte (4 bytes total), then consume any additional non-printable parameter bytes (excluding `02` word separators and `13` which may begin a formatting sequence), then skip any doubled-pair indent markers.
+
+**Self-referential sequences — `22 XX XX` (type == ctrl_byte):** When the control type byte equals the ctrl_byte itself (e.g. `22 61 61` in standard files, `22 6d 6d` in `22 6d` variant files), the sequence is always binary layout/page metadata and never contains body text. The parser skips directly to the next `22 XX 0b` paragraph content block rather than using the variable-length skip, which would otherwise stop at the first printable byte and leak binary data as text artefacts.
 
 ## Trailing Indent Metadata Pattern
 
