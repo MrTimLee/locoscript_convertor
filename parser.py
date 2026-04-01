@@ -295,24 +295,41 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # Another control prefix starts at the indent-byte position;
             # skip 7 bytes and let the main loop handle that control sequence.
             i += 7
+        elif i + 8 < n and data[i+5] == 0x0f and data[i+6] == 0x04:
+            # SI tab indicator embedded in paragraph header (B5=0x0f B6=0x04):
+            # structure is 22 XX 0b B3 B4 0f 04 B1 B2 [01 PP PP] → content.
+            # Skip 9 bytes (header + B3 B4 + 0f 04 + B1 B2), then consume the
+            # optional 01-separator and identical-byte indent pair.
+            i += 9
+            if i < n and data[i] == 0x01:
+                i += 1
+                if i + 1 < n and data[i] == data[i + 1]:
+                    i += 2
         else:
             i += 8
     else:
         # Variable structure: skip prefix + type byte (3 bytes).
-        # The spec says "+1 extra parameter byte" but using i += 4 would
-        # consume 0x13 before the exclusion logic can protect it — leaving
-        # 13 04 xx formatting sequences unrecognised.  Using i += 3 and
-        # letting the non-printable loop handle parameter bytes (which
-        # already excludes 0x13 and WORD_SEP) is equivalent for all other
-        # cases and correctly stops before a formatting sequence.
-        i += 3
-        # Skip any non-printable parameter bytes (but NOT word separators or
-        # 0x13 which may start a 13 04 xx formatting sequence)
-        while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
-            i += 1
-        # Skip doubled-pair indent markers (e.g. 0x54 0x54, 0x3d 0x3d)
-        while i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
-            i += 2
+        # Special case: type == ctrl_byte (e.g. "22 61 61") is a self-referential
+        # sequence that always appears as binary layout/page metadata, never as body
+        # text.  Skip directly to the next paragraph content block.
+        if ctrl_type == ctrl_byte:
+            next_block = data.find(para_ctrl, i + 3)
+            i = next_block if next_block >= 0 else n
+        else:
+            # The spec says "+1 extra parameter byte" but using i += 4 would
+            # consume 0x13 before the exclusion logic can protect it — leaving
+            # 13 04 xx formatting sequences unrecognised.  Using i += 3 and
+            # letting the non-printable loop handle parameter bytes (which
+            # already excludes 0x13 and WORD_SEP) is equivalent for all other
+            # cases and correctly stops before a formatting sequence.
+            i += 3
+            # Skip any non-printable parameter bytes (but NOT word separators or
+            # 0x13 which may start a 13 04 xx formatting sequence)
+            while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
+                i += 1
+            # Skip doubled-pair indent markers (e.g. 0x54 0x54, 0x3d 0x3d)
+            while i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
+                i += 2
 
     return i
 
@@ -398,12 +415,19 @@ def parse(data: bytes) -> Document:
         # to the next paragraph content block.  Only active before body_start;
         # safe because the only other 0x00-containing pattern (trailing indent
         # 00 01 XX XX) has a second byte of 0x01, not 0x00.
+        # If no content has been accumulated the 00 00 pair is a layout byte
+        # that may be followed by text (e.g. "Place: HEXHAM." in MEMORIAL-
+        # style documents); skip only the two NUL bytes and keep parsing.
         if i < body_start and data[i] == 0x00 and i + 1 < n and data[i + 1] == 0x00:
-            if any(c.strip() for c in current_text):
+            has_content = any(c.strip() for c in current_text) or any(
+                r.text.strip() for r in current_para.runs)
+            if has_content:
                 flush_run()
                 flush_para()
-            next_para = data.find(para_ctrl, i + 2)
-            i = next_para if next_para >= 0 else n
+                next_para = data.find(para_ctrl, i + 2)
+                i = next_para if next_para >= 0 else n
+            else:
+                i += 2
             continue
 
         # --- Section / page break: 0e 01 or 0e 02 ---
@@ -553,6 +577,21 @@ def parse(data: bytes) -> Document:
                     # based on where this paragraph content block sits in the file.
                     if i >= body_start:
                         current_section = 'body'
+                        # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
+                        # the body signals a paragraph boundary (these documents use
+                        # 22 XX 0b pairs rather than 13 04 50 between paragraphs).
+                        # B3=0xe8, B4=0x05 is the distinctive first-block signature.
+                        if i + 4 < n and data[i + 3] == 0xe8 and data[i + 4] == 0x05:
+                            flush_run()
+                            flush_para()
+                        # Page break indicator: B5=0x07 means a binary page-layout
+                        # block follows (seen in MEMORIAL-style documents as
+                        # "22 XX 0b B3 B4 07 03 ...").  Jump to the next paragraph
+                        # content block, skipping the binary metadata.
+                        if i + 5 < n and data[i + 5] == 0x07:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
                     elif footer_start > 0 and i >= footer_start:
                         current_section = 'footer'
                     elif initial_section != 'body':

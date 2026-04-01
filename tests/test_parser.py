@@ -985,5 +985,63 @@ class TestGoldenFileHeaderFooter(unittest.TestCase):
         self.assertIn('---', self.txt)
 
 
+class TestSelfReferentialCtrlSkip(unittest.TestCase):
+    """22 XX XX (ctrl type == ctrl_byte) is always layout metadata; no text leak."""
+
+    def test_22_61_61_printable_params_not_emitted(self):
+        # "22 61 61 18 18 78 00 00 64" — 0x78='x' and 0x64='d' must NOT leak as text.
+        # The self-referential sequence should skip to the next 22 61 0b, after
+        # which the real content "Hello" appears.
+        body = (
+            b'\x22\x61\x61\x18\x18\x78\x00\x00\x64'  # self-ref + binary params
+            b'\x22\x61\x0b\x00\x00\x00\x00\x00'       # next paragraph block (default 8-byte)
+            b'Hello'
+        )
+        result = _plain(_doc(body))
+        self.assertNotIn('x', result)
+        self.assertNotIn('d', result)
+        self.assertIn('Hello', result)
+
+    def test_22_6d_6d_skipped_in_6d_file(self):
+        # In a 22 6d file, 22 6d 6d is the self-referential sequence; 'm' must not leak.
+        # Build a minimal 22 6d DOC file.
+        para_ctrl_6d = bytes([0x22, 0x6d, 0x0b])
+        # 22 6d 0b repeated 3 times to make ctrl_byte detection pick 0x6d
+        header = b'DOC' + para_ctrl_6d * 3 + bytes([0x00] * 5)
+        body = (
+            b'\x22\x6d\x6d\x18\x18\x78\x00\x00'  # self-ref (22 6d 6d) + binary
+            + para_ctrl_6d + b'\x00\x00\x00\x00\x00'  # next paragraph block
+            + b'World'
+        )
+        result = parse(header + body).plain_text()
+        self.assertNotIn('m', result)
+        self.assertIn('World', result)
+
+
+class TestSITabInParagraphHeader(unittest.TestCase):
+    """22 XX 0b B3 B4 0f 04 B1 B2 [01 PP PP] — SI tab embedded in header must not leak B2."""
+
+    def test_si_tab_header_b2_not_emitted(self):
+        # "22 61 0b 88 02 0f 04 3b 61 01 0b 0b" — B2=0x61='a' must NOT be emitted.
+        # The 9-byte skip + consume(01 PP PP) should land at the content byte.
+        body = (
+            b'\x22\x61\x0b\x88\x02\x0f\x04\x3b\x61\x01\x0b\x0b'  # SI-tab header block
+            b'Content'
+        )
+        result = _plain(_doc(body))
+        self.assertNotIn('a', result)
+        self.assertIn('Content', result)
+
+    def test_si_tab_header_with_non_control_doubled_pair(self):
+        # Same structure but doubled pair uses printable bytes (PP >= 0x20).
+        body = (
+            b'\x22\x61\x0b\x28\x02\x0f\x04\x3b\x61\x01\x1f\x1f'  # 0x1f < 0x20 pair
+            b'Text'
+        )
+        result = _plain(_doc(body))
+        self.assertNotIn('a', result)
+        self.assertIn('Text', result)
+
+
 if __name__ == '__main__':
     unittest.main()
