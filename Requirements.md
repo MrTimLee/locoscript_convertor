@@ -210,6 +210,19 @@ Both bytes are consumed as a unit; the second byte is a parameter and does not p
 
 RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOCX output sets `paragraph.alignment` to `WD_ALIGN_PARAGRAPH.CENTER` or `WD_ALIGN_PARAGRAPH.RIGHT`.
 
+### Contents Page Separators — `0f 01` / `0f 02` (non-`22 61` files only)
+
+In `22 6d` variant files, the Contents Page section uses `0f 01` and `0f 02` as structural separators immediately preceding a `22 ctrl 0b` paragraph block, rather than `13 04 50`:
+
+| Pattern | Meaning |
+|---------|---------|
+| `0f 02 22 ctrl 0b [...]` | Paragraph boundary — flush current paragraph, start new one |
+| `0f 01 22 ctrl 0b [...]` | Line break within paragraph |
+
+These handlers only fire when `ctrl_byte != 0x61` (i.e., non-standard variants). In standard `22 61` files the same byte patterns have different semantics and are handled by existing logic.
+
+Each Contents Page entry is followed by a `0f 04 27 6d 01 XX XX` left-indent tab stop (the `27 6d` bytes encode the column position and ctrl_byte delimiter). The `22 ctrl 0b` block immediately after `0f 01`/`0f 02` may have B6=`0f` B7=`04` or B7=`0f` in its tail — both are left for the main loop's `0f 04` handler by using a shortened skip (6 or 7 bytes respectively).
+
 ### SI Tab / Hanging Indent — `0f 04` (tab) / `0f 05` (hanging indent)
 Two-byte prefix followed by optional parameter bytes:
 

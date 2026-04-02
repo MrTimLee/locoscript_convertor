@@ -271,9 +271,15 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # Indent bytes are 13 04 (a formatting prefix) — leave them for
             # the main loop to handle as italic-on/line-break.
             i += 6
-        elif i + 8 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] == 0x01:
-            # Extended variant: indent area is 78 00, followed by 01 + real
-            # indent pair.  Skip the full 11 bytes (8 + 01 + WW WW).
+        elif i + 7 < n and data[i+6] == 0x0f and data[i+7] == 0x04:
+            # Indent bytes are 0f 04 (SI tab) — leave them for the main loop.
+            i += 6
+        elif (i + 8 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] in (0x01, 0x0a)
+              and not (data[i+3] >= 0x80 and data[i+4] == 0x0e)):
+            # Extended variant: indent area is 78 00, followed by a separator
+            # byte (0x01 normally, 0x0a in some 22 6d files) + real indent pair.
+            # Structural header blocks (B3 >= 0x80, B4 = 0x0e) are excluded even
+            # if they happen to have 78 00 in their tail bytes.
             i += 11
         elif i + 4 < n and data[i+3] >= 0x80 and data[i+4] == 0x0e:
             # Any 0b block with a high B3 byte (≥0x80) and 0x0e at B4 is a
@@ -287,6 +293,11 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
             i += 11
+        elif i + 7 < n and data[i+7] == 0x0f:
+            # B7 is an 0f SI byte — part of an 0f XX sequence (tab, hanging indent,
+            # or Contents Page paragraph separator).  Skip 7 bytes and leave the
+            # 0f for the main loop to handle.
+            i += 7
         elif i + 8 < n and data[i+7] == 0x13 and data[i+8] == 0x04:
             # 13 04 formatting sequence falls at offset 7-8 (one later than case 1);
             # skip 7 bytes and let the main loop handle the 13 04 xx sequence.
@@ -506,6 +517,27 @@ def parse(data: bytes) -> Document:
         #            → content
         # Without this handler the printable param bytes (e.g. '1a', 'Rf') and any
         # following doubled pairs (e.g. '**', '>>') leak into the output as artefacts.
+        # 0f 02 22 ctrl 0b — paragraph separator used in Contents Page sections
+        # of 22 6d variant files.  Only active for non-standard ctrl_byte (not
+        # 0x61) where this pattern is confirmed as a paragraph boundary.
+        if (ctrl_byte != 0x61
+                and data[i] == 0x0f and i+1 < n and data[i+1] == 0x02
+                and i+3 < n and data[i+2] == 0x22 and data[i+3] == ctrl_byte):
+            flush_run()
+            flush_para()
+            i += 2
+            continue
+
+        # 0f 01 22 ctrl 0b — line break within a paragraph in 22 6d variant
+        # files.  Only active for non-standard ctrl_byte (not 0x61).
+        if (ctrl_byte != 0x61
+                and data[i] == 0x0f and i+1 < n and data[i+1] == 0x01
+                and i+3 < n and data[i+2] == 0x22 and data[i+3] == ctrl_byte):
+            flush_run()
+            current_text.append('\n')
+            i += 2
+            continue
+
         if data[i] == 0x0f and i+1 < n and data[i+1] in (0x04, 0x05):
             is_tab = (data[i+1] == 0x04)
             i += 2
