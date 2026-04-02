@@ -278,6 +278,8 @@ This is the most important control type. It marks the start of a new paragraph's
           3 param    2 indent
 ```
 
+If B5=`13` and B6=`04` (a `13 04` formatting prefix embedded in the param bytes), the skip is shortened to 5 bytes, leaving `13 04 XX` for the main loop to handle as italic-on (`64`), italic-off/line-break (`78`), or paragraph break (`50`).
+
 Several structural variants exist:
 
 | Condition | Meaning | Action |
