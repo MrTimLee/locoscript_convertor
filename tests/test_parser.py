@@ -1100,6 +1100,60 @@ class TestSectionBreakParagraphSplit(unittest.TestCase):
         self.assertIn('second', paras[1])
 
 
+class TestMidSentenceBlockFormatting(unittest.TestCase):
+    """22 61 0b block with 13 04 XX at B5-B6 should leave the formatting
+    sequence for the main loop rather than consuming it in the block skip."""
+
+    def test_italic_on_not_consumed_by_block_skip(self):
+        """13 04 64 at B5-B6-B7 should turn on italic, not be skipped."""
+        # 22 61 0b B3 B4 13 04 64 → italic-on left for main loop
+        block = PARA_CTRL + bytes([0x34, 0x00, 0x13, 0x04, 0x64])
+        body = (
+            block
+            + b'text'
+            + bytes([0x13, 0x04, 0x78])   # italic off
+            + bytes([0x13, 0x04, 0x50])   # paragraph break
+        )
+        doc = parse(_doc(body))
+        italic_runs = [r for p in doc.paragraphs for r in p.runs if r.italic]
+        self.assertTrue(any('text' in r.text for r in italic_runs))
+
+    def test_no_spurious_newline_when_italic_consumed(self):
+        """Without fix, 13 04 78 fires as line break; with fix it fires as
+        italic-off.  Confirm no \\n in the paragraph text."""
+        block = PARA_CTRL + bytes([0x34, 0x00, 0x13, 0x04, 0x64])
+        body = (
+            b'before'
+            + bytes([0x02])
+            + block
+            + b'OED'
+            + bytes([0x13, 0x04, 0x78])   # should be italic-off, not newline
+            + bytes([0x02])
+            + b'after'
+            + bytes([0x13, 0x04, 0x50])
+        )
+        doc = parse(_doc(body))
+        text = doc.paragraphs[0].plain_text()
+        self.assertNotIn('\n', text)
+        self.assertIn('before', text)
+        self.assertIn('OED', text)
+        self.assertIn('after', text)
+
+    def test_para_break_at_b5_not_consumed(self):
+        """13 04 50 at B5-B6-B7 should flush the paragraph, not be skipped."""
+        block = PARA_CTRL + bytes([0x54, 0x08, 0x13, 0x04, 0x50])
+        body = (
+            b'first'
+            + block
+            + b'second'
+            + bytes([0x13, 0x04, 0x50])
+        )
+        paras = _paras(_doc(body))
+        self.assertEqual(len(paras), 2)
+        self.assertIn('first', paras[0])
+        self.assertIn('second', paras[1])
+
+
 class TestContentsPageControlBlock(unittest.TestCase):
     """22 6d variant: 0f 02 / 0f 01 paragraph and line-break separators,
     and 78 00 0a extended-variant skip."""

@@ -267,7 +267,11 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
     if ctrl_type == 0x0b:
         # Structure: 22 XX 0b + 3 param bytes + 2 indent bytes = 8 bytes.
         # Several special cases based on what the param/indent bytes contain:
-        if i + 7 < n and data[i+6] == 0x13 and data[i+7] == 0x04:
+        if i + 6 < n and data[i+5] == 0x13 and data[i+6] == 0x04:
+            # 13 04 formatting prefix starts at B5 — leave it for the main loop
+            # to handle as italic-on, italic-off/line-break, or paragraph break.
+            i += 5
+        elif i + 7 < n and data[i+6] == 0x13 and data[i+7] == 0x04:
             # Indent bytes are 13 04 (a formatting prefix) — leave them for
             # the main loop to handle as italic-on/line-break.
             i += 6
