@@ -1043,5 +1043,62 @@ class TestSITabInParagraphHeader(unittest.TestCase):
         self.assertIn('Text', result)
 
 
+class TestSectionBreakParagraphSplit(unittest.TestCase):
+    """0e 01 / 0e 02 mid-sentence should not create a paragraph split."""
+
+    def _make(self, before: bytes, after: bytes) -> bytes:
+        """Build a minimal doc with a section break between two text fragments.
+
+        Layout: opening para block + before-text + 0e 01 + dummy layout block
+        + second para block + after-text + paragraph break.
+        The dummy layout block contains no 22 61 0b bytes so the parser jumps
+        straight to the explicit second para block.
+        """
+        layout_block = bytes([0x00] * 10)
+        second_para = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        body = (
+            before
+            + bytes([0x0e, 0x01])
+            + layout_block
+            + second_para
+            + after
+            + bytes([0x13, 0x04, 0x50])  # paragraph break
+        )
+        return _doc(body)
+
+    def test_section_break_mid_sentence_no_split(self):
+        """0e 01 preceded by word separator should not split the paragraph."""
+        # "care " 0e 01 "home" → one paragraph: "care home"
+        data = self._make(
+            b'care' + bytes([0x02]),          # "care" + word separator
+            b'home',
+        )
+        paras = _paras(data)
+        self.assertEqual(len(paras), 1)
+        self.assertIn('care', paras[0])
+        self.assertIn('home', paras[0])
+
+    def test_section_break_mid_sentence_printable_prev(self):
+        """0e 01 preceded by a printable byte should not split the paragraph."""
+        # "elderly," 0e 01 "opened" → one paragraph
+        data = self._make(b'elderly,', b'opened')
+        paras = _paras(data)
+        self.assertEqual(len(paras), 1)
+        self.assertIn('elderly', paras[0])
+        self.assertIn('opened', paras[0])
+
+    def test_section_break_after_line_break_does_split(self):
+        """0e 01 preceded by 13 04 78 (line break) should create a paragraph split."""
+        # "first" 13 04 78 00 0e 01 "second" → two paragraphs
+        data = self._make(
+            b'first' + bytes([0x13, 0x04, 0x78, 0x00]),
+            b'second',
+        )
+        paras = _paras(data)
+        self.assertEqual(len(paras), 2)
+        self.assertIn('first', paras[0])
+        self.assertIn('second', paras[1])
+
+
 if __name__ == '__main__':
     unittest.main()

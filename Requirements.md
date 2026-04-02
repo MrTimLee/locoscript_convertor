@@ -229,7 +229,16 @@ B1  B2   ← two printable bytes (B1 = column position, B2 = body ctrl_byte)
 Note: `09 00` is now recognised as bold-off (see Inline Formatting above). The trailing `01 XX XX` params are consumed as part of the bold-off handler. This entry is retained for historical reference only.
 
 ### Section / Page Break — `0e 01` or `0e 02`
-A two-byte sequence where `0e` is followed by `01` (section break) or `02` (page break). This is followed by a variable-length binary metadata block encoding the new section's page layout. The entire block is skipped by jumping forward to the next `22 61 0b` paragraph content marker. Content accumulated up to this point is flushed as a complete paragraph before the skip.
+A two-byte sequence where `0e` is followed by `01` (section break) or `02` (page break). This is followed by a variable-length binary metadata block encoding the new section's page layout. The entire block is skipped by jumping forward to the next `22 61 0b` paragraph content marker.
+
+Whether the break creates a paragraph boundary depends on what precedes the `0e` byte (body section only):
+
+| Byte before `0e` | Meaning | Action |
+|-----------------|---------|--------|
+| `0x02` (word separator) or printable (`0x20`–`0x7e`) | Break is mid-sentence — layout/column switch only | Skip layout block; **do not flush paragraph** |
+| Any other byte (e.g. follows `13 04 78` line break) | Break follows a genuine paragraph end | Flush paragraph, then skip layout block |
+
+This distinction only applies within the body (`i >= body_start`). Section breaks in the pre-body zone (between header, footer, and body sections) always flush the paragraph unconditionally.
 
 ### Hyphen / Extra Space — `06`
 Contextual byte. Emits a hyphen (`-`) when it falls between two printable text characters. Emits a space when adjacent to a word separator (`02`), another `06`, or a non-printable preceding byte.

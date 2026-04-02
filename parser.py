@@ -436,7 +436,10 @@ def parse(data: bytes) -> Document:
         # type of the next section.
         if data[i] == SECTION_BREAK and i+1 < n and data[i+1] in SECTION_BREAK_TYPES:
             flush_run()
-            flush_para()
+            prev = data[i - 1] if i > 0 else 0x00
+            mid_sentence = i >= body_start and (prev == 0x02 or 0x20 <= prev <= 0x7e)
+            if not mid_sentence:
+                flush_para()
             next_para = data.find(para_ctrl, i + 2)
             i = next_para if next_para >= 0 else n
             continue
