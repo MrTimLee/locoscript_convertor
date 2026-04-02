@@ -7,7 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from converter import SUPPORTED_FORMATS, convert, log_error
+from converter import SUPPORTED_FORMATS, convert, log_error, log_warning
 from parser import ParseError, parse
 
 LOG_FILENAME = 'DocConvertor-Error.log'
@@ -113,8 +113,10 @@ class App(tk.Tk):
         total = len(self._files)
         failed = 0
         skipped = 0
+        warned = 0
         self._overwrite_policy = None
         start_time = time.monotonic()
+        log_path = Path(__file__).parent / LOG_FILENAME
 
         self._progress.config(maximum=total, value=0)
         self._set_status(f'Converting 0 of {total}…')
@@ -136,15 +138,22 @@ class App(tk.Tk):
                     data = f.read()
                 doc = parse(data)
                 convert(doc, dest)
+                output_size = dest.stat().st_size
+                if len(data) > 0 and output_size < len(data) * 0.1:
+                    warned += 1
+                    log_warning(
+                        log_path, src.name,
+                        f'Output is suspiciously small ({output_size} bytes vs {len(data)} bytes input)'
+                        ' — possible parse failure'
+                    )
             except Exception as e:
                 failed += 1
-                log_path = src.parent / LOG_FILENAME
                 log_error(log_path, src.name, e)
 
             self._step_progress(i)
 
         elapsed = time.monotonic() - start_time
-        self._finish(total, failed, skipped, elapsed)
+        self._finish(total, failed, skipped, warned, elapsed)
 
     def _ask_overwrite(self, dest: Path, batch: bool = False) -> bool:
         """Ask the user whether to overwrite an existing file (called from worker thread).
@@ -200,25 +209,35 @@ class App(tk.Tk):
     def _set_status(self, msg: str):
         self.after(0, lambda: self._status_var.set(msg))
 
-    def _finish(self, total: int, failed: int, skipped: int = 0, elapsed: float = 0.0):
+    def _finish(self, total: int, failed: int, skipped: int = 0, warned: int = 0, elapsed: float = 0.0):
         self._convert_btn.config(state='normal')
         succeeded = total - failed - skipped
         skip_note = f', {skipped} skipped' if skipped else ''
         time_note = f'  Time taken: {elapsed:.1f}s'
-        if failed == 0:
+        warn_note = (
+            f'\n{warned} file(s) produced suspiciously small output — possible parse failure.'
+            f'\nSee {LOG_FILENAME} for details.'
+        ) if warned else ''
+        if failed == 0 and warned == 0:
             self.after(0, lambda: messagebox.showinfo(
                 'Done',
                 f'{succeeded} file(s) converted successfully{skip_note}.{time_note}'
             ))
             self._set_status(f'Done. {succeeded} converted{skip_note}. ({elapsed:.1f}s)')
+        elif failed == 0:
+            self.after(0, lambda: messagebox.showwarning(
+                'Completed with warnings',
+                f'{succeeded} file(s) converted{skip_note}.{warn_note}{time_note}'
+            ))
+            self._set_status(f'Done. {succeeded} converted{skip_note}, {warned} warning(s). ({elapsed:.1f}s)')
         else:
             self.after(0, lambda: messagebox.showwarning(
                 'Completed with errors',
                 f'{succeeded} file(s) converted{skip_note}.\n'
-                f'{failed} file(s) failed — see {LOG_FILENAME} in each file\'s folder.'
-                f'{time_note}'
+                f'{failed} file(s) failed — see {LOG_FILENAME} for details.'
+                f'{warn_note}{time_note}'
             ))
-            self._set_status(f'Done. {succeeded} succeeded{skip_note}, {failed} failed. ({elapsed:.1f}s)')
+            self._set_status(f'Done. {succeeded} succeeded{skip_note}, {failed} failed, {warned} warning(s). ({elapsed:.1f}s)')
 
 
 if __name__ == '__main__':
