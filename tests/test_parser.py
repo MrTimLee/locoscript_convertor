@@ -1100,5 +1100,77 @@ class TestSectionBreakParagraphSplit(unittest.TestCase):
         self.assertIn('second', paras[1])
 
 
+class TestContentsPageControlBlock(unittest.TestCase):
+    """22 6d variant: 0f 02 / 0f 01 paragraph and line-break separators,
+    and 78 00 0a extended-variant skip."""
+
+    # Minimal 22 6d file envelope
+    MAGIC_6D = b'DOC'
+    PARA_6D = bytes([0x22, 0x6d, 0x0b])
+
+    def _doc_6d(self, body: bytes) -> bytes:
+        """Wrap body in a minimal 22 6d document envelope."""
+        header = self.MAGIC_6D + self.PARA_6D + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        return header + body
+
+    def _para_sep(self) -> bytes:
+        """0f 02 22 6d 0b [6 zero bytes] — paragraph separator."""
+        return bytes([0x0f, 0x02]) + self.PARA_6D + bytes([0x00] * 5)
+
+    def _line_break(self) -> bytes:
+        """0f 01 22 6d 0b [6 zero bytes] — line break."""
+        return bytes([0x0f, 0x01]) + self.PARA_6D + bytes([0x00] * 5)
+
+    def test_0f_02_creates_paragraph_break(self):
+        """0f 02 22 6d 0b should flush the paragraph and start a new one."""
+        body = (
+            b'first'
+            + self._para_sep()
+            + b'second'
+            + bytes([0x13, 0x04, 0x50])
+        )
+        paras = _paras(self._doc_6d(body))
+        self.assertEqual(len(paras), 2)
+        self.assertIn('first', paras[0])
+        self.assertIn('second', paras[1])
+
+    def test_0f_01_creates_line_break(self):
+        """0f 01 22 6d 0b should emit a newline within the current paragraph."""
+        body = (
+            b'first'
+            + self._line_break()
+            + b'second'
+            + bytes([0x13, 0x04, 0x50])
+        )
+        paras = _paras(self._doc_6d(body))
+        self.assertEqual(len(paras), 1)
+        self.assertIn('first', paras[0])
+        self.assertIn('second', paras[0])
+        self.assertIn('\n', paras[0])
+
+    def test_0f_02_does_not_fire_in_22_61_files(self):
+        """0f 02 22 61 0b should NOT be treated as a paragraph break in standard files."""
+        # In a standard 22 61 file the pattern has a different meaning
+        para_61 = bytes([0x22, 0x61, 0x0b])
+        sep = bytes([0x0f, 0x02]) + para_61 + bytes([0x00] * 5)
+        body = b'first' + sep + b'second' + bytes([0x13, 0x04, 0x50])
+        header = b'DOC' + para_61 + bytes([0x00] * 5)
+        paras = _paras(header + body)
+        # Should NOT produce two paragraphs from the 0f 02 alone
+        combined = ' '.join(paras)
+        self.assertIn('first', combined)
+        self.assertIn('second', combined)
+
+    def test_78_00_0a_skip_no_spurious_x(self):
+        """22 6d 0b block with 78 00 0a separator should not emit spurious bytes."""
+        # Build: 22 6d 0b [B3 B4 B5 78 00 0a PP PP] then "text"
+        block = self.PARA_6D + bytes([0x00, 0x00, 0x00, 0x78, 0x00, 0x0a, 0x41, 0x41])
+        body = block + b'text' + bytes([0x13, 0x04, 0x50])
+        data = self._doc_6d(body)
+        result = _plain(data)
+        self.assertIn('text', result)
+        self.assertNotIn('x', result.replace('text', ''))
+
+
 if __name__ == '__main__':
     unittest.main()
