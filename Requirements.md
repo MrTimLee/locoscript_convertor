@@ -34,12 +34,13 @@
 
 # Errors
 - If when processing multiple files a file fails, the error should be logged in a .txt file and processing should move to the next file
-- The error log should be saved in the same directory as the file being processed
+- The error log should be saved in the same directory as the application
 - The error log should be named "DocConvertor-Error.log"
 - The error log should be appended to on each run
 - An error log entry should consist of: <TIMESTAMP> - <DocumentName>: Full Error Message
 - If one or more files fail during a batch run an error message should be shown stating the number failed and directing the user to investigate the error log. 
 - If an input file is not recognised as a valid Locoscript 2 format, treat it as a conversion error
+- If a successfully converted output file is less than 10% of the size of its input file, log a `[WARNING]` entry to the error log and surface a warning to the user in the completion message. This catches cases where the parser has silently failed to extract most of the document content.
 
 
 

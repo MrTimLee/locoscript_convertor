@@ -223,3 +223,11 @@ def log_error(log_path: Path, filename: str, error: Exception) -> None:
     entry = f"{timestamp} - {filename}: {type(error).__name__}: {error}\n"
     with open(log_path, 'a', encoding='utf-8') as f:
         f.write(entry)
+
+
+def log_warning(log_path: Path, filename: str, message: str) -> None:
+    """Append a timestamped warning entry to the error log."""
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    entry = f"{timestamp} - {filename}: [WARNING] {message}\n"
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write(entry)
