@@ -212,12 +212,12 @@ RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOC
 
 ### Contents Page Separators — `0f 01` / `0f 02` (non-`22 61` files only)
 
-In `22 6d` variant files, the Contents Page section uses `0f 01` and `0f 02` as structural separators immediately preceding a `22 ctrl 0b` paragraph block, rather than `13 04 50`:
+In `22 6d` and `1e 74` variant files, paragraph separators use `0f 01` and `0f 02` immediately preceding a `PP ctrl 0b` paragraph block, rather than `13 04 50`:
 
 | Pattern | Meaning |
 |---------|---------|
-| `0f 02 22 ctrl 0b [...]` | Paragraph boundary — flush current paragraph, start new one |
-| `0f 01 22 ctrl 0b [...]` | Line break within paragraph |
+| `0f 02 PP ctrl 0b [...]` | Paragraph boundary — flush current paragraph, start new one |
+| `0f 01 PP ctrl 0b [...]` | Line break within paragraph |
 
 These handlers only fire when `ctrl_byte != 0x61` (i.e., non-standard variants). In standard `22 61` files the same byte patterns have different semantics and are handled by existing logic.
 
@@ -256,19 +256,30 @@ This distinction only applies within the body (`i >= body_start`). Section break
 ### Hyphen / Extra Space — `06`
 Contextual byte. Emits a hyphen (`-`) when it falls between two printable text characters. Emits a space when adjacent to a word separator (`02`), another `06`, or a non-printable preceding byte.
 
-## Control Sequence Prefix — `22 61` / `22 6d` / `22 42`
+## Control Sequence Prefix — `22 61` / `22 6d` / `22 42` / `1e 74`
 
-The two-byte sequence `22 XX` introduces a structured control sequence. The third byte is the control type. Three values of the discriminator byte `XX` have been confirmed:
+Body paragraphs are anchored by a three-byte marker `PP XX 0b`, where `PP` is the prefix byte and `XX` is the ctrl_byte. Four variants have been confirmed:
 
-| `XX` | Files | Notes |
-|------|-------|-------|
-| `0x61` (`"a`) | Standard DOC files | Most common |
-| `0x6d` (`"m`) | `BUILDNGS.A-C`, `MARKETPL.*` | Second variant |
-| `0x42` (`"B`) | `Memorial.002` | Third variant — body only; header zone uses `0x61` |
+| `PP` | `XX` | Files | Notes |
+|------|------|-------|-------|
+| `0x22` | `0x61` (`"a`) | Standard DOC files | Most common |
+| `0x22` | `0x6d` (`"m`) | `BUILDNGS.A-C`, `MARKETPL.*` | Second variant |
+| `0x22` | `0x42` (`"B`) | `Memorial.002` | Third variant — body only; header zone uses `0x61` |
+| `0x1e` | `0x74` | `BINDINDX.HEX` and similar index files | Fourth variant — RS prefix byte instead of `"` |
 
-The parser detects the correct variant by counting all `22 XX 0b` occurrences and returning the **most frequent** `XX` (not the first). This correctly handles files like `Memorial.002` where the header/transition zone contains a handful of `22 61 0b` blocks before the `22 42 0b` body content begins.
+The parser detects the correct variant using `_detect_variant(data) -> (prefix_byte, ctrl_byte)`, which counts all `PP XX 0b` occurrences for `PP` in `{0x22, 0x1e}` and returns the pair with the highest combined count. This correctly handles files like `Memorial.002` where the header/transition zone contains a handful of `22 61 0b` blocks before the `22 42 0b` body content begins.
 
-When `XX` follows `22` and is itself followed by a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code.
+When `PP XX` is followed by a word separator (`02`) or `06`, the sequence is treated as literal text rather than a control code (only applies to `PP = 0x22`; `0x1e` files never embed `1e XX` as literal text).
+
+### `1e 74` Variant — additional details
+
+The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (double-quote). Key behavioural differences from `0x22` variants:
+
+- **Doubled-pair threshold:** all indent values in `1e 74` files fall in `0x00–0x1f`, so the `>= 0x20` threshold is dropped to `>= 0x00` for these files.
+- **Self-referential sequence:** `1e 1e 74 01 00 00 00 23` (analogous to `22 61 61`) — always binary layout metadata, never body text. The parser skips directly to the next `1e 74 0b` block.
+- **`0f 00 1e 74 0b` (section boundary):** always preceded by the self-referential sequence. After the sequence skip lands on `1e 74 0b`, this is treated silently (no paragraph flush).
+- **Scale pitch:** `0x14` (12cpi) in `BINDINDX.HEX`, giving `twips_per_unit = 120`.
+- **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). These bytes are consumed as part of the block skip; no output mapping is currently applied.
 
 ### Control Type `0b` — Paragraph Content Block
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:

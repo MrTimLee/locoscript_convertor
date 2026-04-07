@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from parser import (parse, ParseError, Document, Paragraph, TextRun,
-                    _detect_ctrl_byte, _find_body_start, _find_footer_start)
+                    _detect_variant, _find_body_start, _find_footer_start)
 from converter import to_txt
 
 
@@ -750,28 +750,34 @@ class TestVariableCtrlPrefix(unittest.TestCase):
     def _doc_m(self, body: bytes) -> bytes:
         return self._HEADER_M + body
 
-    def test_detect_ctrl_byte_standard(self):
-        # Standard files (22 61 0b) return 0x61
+    def test_detect_variant_standard(self):
+        # Standard files (22 61 0b) return (0x22, 0x61)
         data = _doc(b'Hello')
-        self.assertEqual(_detect_ctrl_byte(data), 0x61)
+        self.assertEqual(_detect_variant(data), (0x22, 0x61))
 
-    def test_detect_ctrl_byte_variant(self):
-        # Variant files (22 6d 0b) return 0x6d
+    def test_detect_variant_22_6d(self):
+        # Variant files (22 6d 0b) return (0x22, 0x6d)
         data = self._doc_m(b'Hello')
-        self.assertEqual(_detect_ctrl_byte(data), 0x6d)
+        self.assertEqual(_detect_variant(data), (0x22, 0x6d))
 
-    def test_detect_ctrl_byte_fallback(self):
-        # No 22 XX 0b sequence at all → default 0x61
-        self.assertEqual(_detect_ctrl_byte(b'DOC' + b'\x00' * 10), 0x61)
+    def test_detect_variant_fallback(self):
+        # No recognised sequence at all → default (0x22, 0x61)
+        self.assertEqual(_detect_variant(b'DOC' + b'\x00' * 10), (0x22, 0x61))
 
-    def test_detect_ctrl_byte_prefers_most_frequent(self):
+    def test_detect_variant_prefers_most_frequent(self):
         # When header uses 0x61 but body uses 0x42 (like Memorial.002),
-        # the most-frequent value (0x42) should be returned, not the first (0x61).
+        # the most-frequent pair (0x22, 0x42) should win, not the first.
         para_ctrl_61 = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
         para_ctrl_42 = bytes([0x22, 0x42, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
-        # 1× 0x61 (header) + 3× 0x42 (body) → most frequent is 0x42
+        # 1× 0x61 (header) + 3× 0x42 (body) → most frequent is (0x22, 0x42)
         data = MAGIC + para_ctrl_61 + para_ctrl_42 * 3 + b'Hello'
-        self.assertEqual(_detect_ctrl_byte(data), 0x42)
+        self.assertEqual(_detect_variant(data), (0x22, 0x42))
+
+    def test_detect_variant_1e_74(self):
+        # 1e 74 prefix variant: returns (0x1e, 0x74)
+        para_ctrl_1e = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + para_ctrl_1e * 3 + b'Hello'
+        self.assertEqual(_detect_variant(data), (0x1e, 0x74))
 
     def test_22_6d_file_produces_content(self):
         # A 22 6d file must yield the body text rather than garbage
@@ -1287,6 +1293,67 @@ class TestBodyStartDetection22_6d(unittest.TestCase):
         result = _plain(data)
         # '1827' must be present — the scan must not skip over it
         self.assertIn('1827', result)
+
+
+class Test1eVariant(unittest.TestCase):
+    """Tests for the 0x1e prefix byte (1e 74 0b) variant."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        """Minimal envelope for 1e 74 variant: 3× para_ctrl blocks so _detect_variant
+        sees enough 1e 74 0b occurrences to win the frequency count."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        return MAGIC + anchor * 3 + body
+
+    def test_0f_02_1e_74_0b_paragraph_break(self):
+        """0f 02 1e 74 0b must flush the current paragraph and start a new one."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + anchor * 3 + b'First' + sep + b'Second\x13\x04\x50'
+        paras = _paras(data)
+        self.assertIn('First', paras)
+        self.assertIn('Second', paras)
+
+    def test_0f_01_1e_74_0b_line_break(self):
+        """0f 01 1e 74 0b must emit a line break within the current paragraph."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        sep = bytes([0x0f, 0x01]) + self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + anchor * 3 + b'Line1' + sep + b'Line2\x13\x04\x50'
+        result = _plain(data)
+        self.assertIn('Line1', result)
+        self.assertIn('Line2', result)
+        self.assertIn('\n', result)
+
+    def test_doubled_pair_below_0x20_consumed(self):
+        """In 1e variant files, doubled-pair indent values < 0x20 must be consumed,
+        not leaked as text. Here 01 04 04 should not produce chr(4) in output."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        # After paragraph break, 01 04 04 is the trailing doubled-pair indent
+        body = b'Hello\x13\x04\x50\x01\x04\x04' + anchor + b'World\x13\x04\x50'
+        data = MAGIC + anchor * 3 + body
+        result = _plain(data)
+        self.assertIn('Hello', result)
+        self.assertIn('World', result)
+        self.assertNotIn('\x04', result)
+
+    def test_doubled_prefix_1e_1e_skipped(self):
+        """1e 1e 74 self-referential sequence must be skipped entirely;
+        no artefact bytes (e.g. 0x23 '#') must appear in the output."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        # Self-referential sequence followed by 5 metadata bytes
+        self_ref = bytes([0x1e, 0x1e, 0x74, 0x01, 0x00, 0x00, 0x00, 0x23])
+        body = b'Before' + self_ref + anchor + b'After\x13\x04\x50'
+        data = MAGIC + anchor * 3 + body
+        result = _plain(data)
+        self.assertIn('Before', result)
+        self.assertIn('After', result)
+        self.assertNotIn('#', result)
+
+    def test_1e_variant_basic_text(self):
+        """A 1e 74 file with plain text and word separators must parse correctly."""
+        data = self._doc_1e(b'Hello\x02world\x13\x04\x50')
+        self.assertEqual(_plain(data), 'Hello world')
 
 
 if __name__ == '__main__':
