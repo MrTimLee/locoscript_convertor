@@ -201,7 +201,11 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_secti
     the first ``22 XX 0b`` block satisfying all of:
 
     - B3 ≠ ``0x00`` (not a layout/transition block)
-    - B5 ≠ ``0x14`` (not a header/footer zone block)
+    - If a high-B3 (≥ ``0x80``) block has been seen earlier in the scan, accept
+      the first low-B3 non-zero block unconditionally (we have crossed out of
+      the transition zone).  Otherwise apply B5 ≠ ``0x14`` (pre-body paragraphs
+      in standard ``22 61`` files carry B5 = ``0x14``; the first body paragraph
+      does not).
     - NOT (B3 ≥ ``0x80`` AND B4 == ``0x0e``) (not a structural section block)
     """
     if initial_section == 'body':
@@ -214,15 +218,33 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_secti
     if candidate != first_para:
         return candidate
 
-    # Fallback: B5 ≠ 0x14 scan
+    # Fallback scan: iterate 22 XX 0b blocks forward from first_para.
+    #
+    # Two classes of pre-body block appear in practice:
+    #
+    # A) High-B3 blocks (B3 ≥ 0x80): structural / layout / section-header
+    #    metadata — always pre-body.  Seeing one sets a flag that signals we
+    #    have entered the transition zone.
+    #
+    # B) Low-B3 blocks (B3 < 0x80, B3 ≠ 0x00): either pre-body content
+    #    (header / footer paragraphs) or the first body paragraph.
+    #    Discrimination rule:
+    #      - If a high-B3 block has already been seen → this is the body start
+    #        (we have crossed out of the transition zone).
+    #      - Otherwise → apply the B5 ≠ 0x14 heuristic (pre-body paragraphs
+    #        in standard 22-61 files carry B5 = 0x14; the first body paragraph
+    #        does not).
     pos = first_para
+    seen_high_b3 = False
     while True:
         if pos + 5 < n:
             b3 = data[pos + 3]
-            b4 = data[pos + 4]
             b5 = data[pos + 5]
-            if b3 != 0x00 and b5 != 0x14 and not (b3 >= 0x80 and b4 == 0x0e):
-                return pos
+            if b3 >= 0x80:
+                seen_high_b3 = True
+            elif b3 != 0x00:
+                if seen_high_b3 or b5 != 0x14:
+                    return pos
         next_pos = data.find(para_ctrl, pos + 3)
         if next_pos < 0:
             break
@@ -278,12 +300,13 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
         elif i + 7 < n and data[i+6] == 0x0f and data[i+7] == 0x04:
             # Indent bytes are 0f 04 (SI tab) — leave them for the main loop.
             i += 6
-        elif (i + 8 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] in (0x01, 0x0a)
+        elif (i + 10 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] in (0x01, 0x0a)
+              and data[i+9] == data[i+10] and data[i+9] >= 0x20
               and not (data[i+3] >= 0x80 and data[i+4] == 0x0e)):
             # Extended variant: indent area is 78 00, followed by a separator
-            # byte (0x01 normally, 0x0a in some 22 6d files) + real indent pair.
-            # Structural header blocks (B3 >= 0x80, B4 = 0x0e) are excluded even
-            # if they happen to have 78 00 in their tail bytes.
+            # byte (0x01 normally, 0x0a in some 22 6d files) + a real doubled-pair
+            # indent marker (B9 == B10, both ≥ 0x20).  Structural header blocks
+            # (B3 ≥ 0x80, B4 = 0x0e) are excluded.
             i += 11
         elif i + 4 < n and data[i+3] >= 0x80 and data[i+4] == 0x0e:
             # Any 0b block with a high B3 byte (≥0x80) and 0x0e at B4 is a
@@ -294,6 +317,21 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # block (may be far ahead, past a binary metadata blob).
             next_block = data.find(para_ctrl, i + 5)
             i = next_block if next_block >= 0 else n
+        elif (i + 7 < n and ctrl_byte != 0x61 and data[i+3] < 0x80
+              and data[i+6] == 0x78 and data[i+7] == 0x00):
+            # 78 00 block without a valid extended-variant doubled pair, in a non-0x61
+            # variant file (22 6d, 22 42, etc.).  These are section-start markers
+            # (e.g. "22 6d 0b 42 0d 14 78 00") that carry variable-length structural
+            # trailing bytes (separator bytes, column widths, etc.) containing
+            # printable values that must not be emitted as text.  Scan forward past
+            # the trailing bytes to the next alignment marker (0x11 DC1) or control
+            # prefix (22 XX).  Standard 22 61 files never use this trailing structure
+            # — their 78 00 blocks use the default 8-byte skip.
+            i += 8
+            while i + 1 < n:
+                if data[i] == 0x11 or (data[i] == 0x22 and data[i + 1] == ctrl_byte):
+                    break
+                i += 1
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
             i += 11

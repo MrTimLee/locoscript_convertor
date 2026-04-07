@@ -1226,5 +1226,68 @@ class TestContentsPageControlBlock(unittest.TestCase):
         self.assertNotIn('x', result.replace('text', ''))
 
 
+class TestBodyStartDetection22_6d(unittest.TestCase):
+    """_find_body_start correctly identifies body start in 22 6d variant files
+    where the body-start block has B5=0x14 and is preceded by high-B3 blocks."""
+
+    PARA_6D = bytes([0x22, 0x6d, 0x0b])
+
+    def test_seen_high_b3_unlocks_b5_14_body_start(self):
+        """After a high-B3 block, a low-B3 block with B5=0x14 is body start."""
+        # Mimics BUILDNGS.A-C: high-B3 transition blocks then 42 0d 14 78 00 body-start.
+        # High-B3 block (B3=0xa6, B4=0x0e → structural header, would be skipped by
+        # _find_body_start's structural filter). Then body-start with B5=0x14.
+        para = self.PARA_6D
+        high_b3_block = para + bytes([0xa6, 0x0e, 0x00, 0x00, 0x00])   # B3>=0x80
+        body_start_block = para + bytes([0x42, 0x0d, 0x14, 0x78, 0x00]) # B3<0x80, B5=0x14
+        data = b'DOC' + high_b3_block + body_start_block + b'Hello'
+        first_para = 3
+        result = _find_body_start(data, 0x6d, first_para, 'header')
+        # Should land on the low-B3 block, not skip it because of B5=0x14
+        self.assertEqual(result, 3 + len(high_b3_block))
+
+    def test_seen_high_b3_not_set_b5_14_still_skipped(self):
+        """Without any prior high-B3 block, a B5=0x14 block is still skipped."""
+        para = self.PARA_6D
+        b5_14_block = para + bytes([0x50, 0x0d, 0x14, 0x78, 0x00])  # B3<0x80, B5=0x14
+        body_block = para + bytes([0x64, 0x00, 0x0a, 0x09, 0x01])    # B5=0x0a → body
+        data = b'DOC' + b5_14_block + body_block + b'Hello'
+        first_para = 3
+        result = _find_body_start(data, 0x6d, first_para, 'header')
+        # B5=0x14 with no prior high-B3 → still treated as header zone → skipped
+        self.assertEqual(result, 3 + len(b5_14_block))
+
+    def test_78_00_body_start_no_spurious_chars(self):
+        """22 6d 0b B3<0x80 78 00 body-start block must not emit trailing bytes."""
+        # Structural trailing bytes after 78 00: 0a 05 00 13 00 78 00 11 06
+        # 'x' (0x78) must not appear before 'Contents' (would give 'xContents').
+        para = self.PARA_6D
+        # Body-start block matching BUILDNGS.A-C pattern at 0x6d2; scan stops at 11 06.
+        body_start = para + bytes([0x42, 0x0d, 0x14, 0x78, 0x00,
+                                   0x0a, 0x05, 0x00, 0x13, 0x00, 0x78, 0x00])
+        # Alignment code, then a standard 8-byte ctrl block (B7=0x00) before text.
+        content = bytes([0x11, 0x06]) + para + bytes([0x43, 0x01, 0x08, 0x08, 0x00])
+        text = b'Contents' + bytes([0x13, 0x04, 0x50])
+        data = b'DOC' + body_start + content + text
+        result = _plain(data)
+        self.assertIn('Contents', result)
+        # No spurious 'x' before Contents (would appear as 'xContents')
+        self.assertNotIn('xContents', result)
+        self.assertNotIn('# ', result)
+
+    def test_78_00_scan_does_not_apply_to_22_61_files(self):
+        """Standard 22 61 files must not have the scan-forward applied to 78 00 blocks."""
+        # In a 22 61 file, a block with B6=0x78 B7=0x00 followed by content bytes
+        # should NOT have the scan skip over those bytes.
+        para_61 = bytes([0x22, 0x61, 0x0b])
+        # Block with 78 00 followed by word-separator + printable content
+        block = para_61 + bytes([0x52, 0x02, 0x14, 0x78, 0x00])
+        content = bytes([0x02, 0x02]) + b'1827' + bytes([0x13, 0x04, 0x50])
+        data = b'DOC' + block + content
+        result = _plain(data)
+        # '1827' must be present — the scan must not skip over it
+        self.assertIn('1827', result)
+
+
 if __name__ == '__main__':
     unittest.main()
