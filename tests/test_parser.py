@@ -1461,6 +1461,62 @@ class Test1eVariant(unittest.TestCase):
         self.assertNotIn('"mm', combined)
         self.assertNotIn('xd', combined)
 
+    def test_page_break_b8_07_skips_binary_blob(self):
+        """1e 74 0b cc 10 14 90 00 07 03 ... is a page-break form where font-size
+        bytes (B5=0x14) precede the 07 03 marker at B8/B9.  The entire blob between
+        this block and the next para_ctrl must be skipped — no printable bytes emitted."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        page_break_block = bytes([0x1e, 0x74, 0x0b, 0xcc, 0x10, 0x14, 0x90, 0x00, 0x07, 0x03])
+        blob = bytes([0x40, 0x30, 0x48, 0x27, 0x78, 0x78, 0x23, 0x24])  # printable junk
+        data = (MAGIC
+                + body_anchor * 3
+                + page_break_block + blob
+                + body_anchor
+                + b'Good' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('Good', combined)
+        self.assertNotIn('@', combined)
+        self.assertNotIn("H'", combined)
+        self.assertNotIn('#$', combined)
+
+    def test_page_break_b6_b7_07_03_skips_binary_blob(self):
+        """1e 74 0b B3 10 02 07 03 ... is a page-break form where 07 03 appears at
+        B6/B7.  The blob between this block and the next para_ctrl must be skipped."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        page_break_block = bytes([0x1e, 0x74, 0x0b, 0xae, 0x10, 0x02, 0x07, 0x03, 0x00])
+        blob = bytes([0x60, 0x81, 0x48, 0x27, 0x78, 0x78, 0x23, 0x24])  # printable junk
+        data = (MAGIC
+                + body_anchor * 3
+                + page_break_block + blob
+                + body_anchor
+                + b'Good' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('Good', combined)
+        self.assertNotIn('`', combined)
+        self.assertNotIn('#$', combined)
+
+    def test_07_03_in_1e_body_discards_metadata_text(self):
+        """In 1e-prefix files, 07 03 at the end of a per-page control text block
+        (e.g. 'Last page Header / Footer disabled') should discard the accumulated
+        metadata text and jump to the next para_ctrl."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        indent = bytes([0x01, 0x22, 0x22])  # trailing indent consumed by skip
+        metadata = b'Metadata text'
+        page_break = bytes([0x07, 0x03])
+        blob = bytes([0x40, 0x30, 0x48, 0x60])  # printable junk after 07 03
+        data = (MAGIC
+                + body_anchor * 3
+                + body_anchor + indent + metadata + page_break + blob
+                + body_anchor
+                + b'RealContent' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('RealContent', combined)
+        self.assertNotIn('Metadata', combined)
+        self.assertNotIn('@', combined)
+
 
 if __name__ == '__main__':
     unittest.main()

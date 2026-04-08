@@ -728,6 +728,20 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             i = next_block if next_block >= 0 else n
             continue
 
+        # --- 07 03 in 1e-prefix body = per-page control block page-break ---
+        # Some 1e-prefix blocks store per-page LocoScript settings (e.g. "Last page
+        # Header / Footer disabled") and end with 07 03 (BEL + ETX) as a page-break
+        # marker, followed by a binary layout blob.  The text before 07 03 is internal
+        # metadata, not body content.  Discard accumulated text and jump to next para_ctrl.
+        # Restricted to 1e-prefix files: in 22-prefix files 07 03 can legitimately follow
+        # body content (e.g. BUILDNGS.H "...Haugh Lane?\x07\x03") and must not be discarded.
+        if (prefix_byte != 0x22
+                and data[i] == 0x07 and i + 1 < n and data[i + 1] == 0x03):
+            current_text.clear()
+            next_para = data.find(para_ctrl, i + 2)
+            i = next_para if next_para >= 0 else n
+            continue
+
         # --- Control sequence: PP XX ---
         if data[i:i+2] == ctrl_prefix:
             ctrl_type = data[i+2] if i+2 < n else 0
@@ -756,6 +770,18 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         # "22 XX 0b B3 B4 07 03 ...").  Jump to the next paragraph
                         # content block, skipping the binary metadata.
                         if i + 5 < n and data[i + 5] == 0x07:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
+                        # Alternative page break forms in 1e-prefix files where font-size
+                        # bytes or an extra param byte shift the 07 03 marker forward:
+                        #   "1e 74 0b cc 10 14 90 00 07 03 ..." — 07 03 at B8/B9
+                        #   "1e 74 0b ae 10 02 07 03 00 ..."   — 07 03 at B6/B7
+                        if i + 8 < n and data[i + 5] == 0x14 and data[i + 8] == 0x07:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
+                        if i + 7 < n and data[i + 6] == 0x07 and data[i + 7] == 0x03:
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
