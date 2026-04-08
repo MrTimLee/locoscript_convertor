@@ -409,8 +409,14 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
     return i
 
 
-def parse(data: bytes) -> Document:
-    """Parse raw Locoscript 2 file bytes into a Document."""
+def parse(data: bytes, _prebody_end: int = 0) -> Document:
+    """Parse raw Locoscript 2 file bytes into a Document.
+
+    ``_prebody_end`` is a private parameter used when parsing the pre-body
+    zone of a ``1e``-prefix file.  When > 0 it overrides ``body_start`` to
+    ``_prebody_end`` so that every block in the slice is routed as
+    header/footer content (there is no body in the pre-body zone).
+    """
     if data[:3] == b'JOY':
         raise ParseError(
             "JOY format files are not currently supported. "
@@ -450,9 +456,36 @@ def parse(data: bytes) -> Document:
     except ValueError:
         first_para = 3
 
-    body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section, prefix_byte)
-    footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
-                    if initial_section == 'header' else 0)
+    if _prebody_end > 0:
+        # Pre-body zone parse: no body exists in this slice — every block is
+        # header/footer content.  Setting body_start = _prebody_end (== n)
+        # ensures i >= body_start is never true, so the initial_section
+        # routing applies throughout.
+        body_start = _prebody_end
+        footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
+                        if initial_section == 'header' else 0)
+    elif prefix_byte != 0x22:
+        # 1e-prefix files: every 1e XX 0b block is body content.  The pre-body
+        # zone (header/footer sections) uses a separate 22 XX 0b variant and
+        # lives before first_para — parse it with a recursive call so that
+        # body_start there is forced to len(prebody_data) and all content is
+        # correctly routed as header/footer.
+        body_start = first_para
+        prebody_data = data[:first_para]
+        prebody_prefix, _prebody_ctrl = _detect_variant(prebody_data)
+        if prebody_prefix == 0x22:
+            prebody_doc = parse(prebody_data, _prebody_end=len(prebody_data))
+            if prebody_doc.header is not None:
+                doc.header = prebody_doc.header
+            if prebody_doc.footer is not None:
+                doc.footer = prebody_doc.footer
+        initial_section = 'body'
+        current_section = 'body'
+        footer_start = 0
+    else:
+        body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section, prefix_byte)
+        footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
+                        if initial_section == 'header' else 0)
 
     i = first_para
 

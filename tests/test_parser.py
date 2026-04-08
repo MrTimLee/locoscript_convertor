@@ -1355,6 +1355,79 @@ class Test1eVariant(unittest.TestCase):
         data = self._doc_1e(b'Hello\x02world\x13\x04\x50')
         self.assertEqual(_plain(data), 'Hello world')
 
+    def test_1e_footer_extracted_from_22_prebody_zone(self):
+        """Footer text in the 22 6d pre-body zone of a 1e 74 file must be
+        extracted correctly and must not appear as a body paragraph."""
+        # Build a synthetic 1e 74 file whose pre-body zone contains a 22 6d 0b
+        # footer paragraph followed by 1e 74 0b body paragraphs.
+        #
+        # Pre-body zone: 22 6d 0b block (B3=0xfa, non-structural) + footer text
+        # Layout section byte (0x5a5) = 0x01 → 'footer'
+        # Body zone: 1e 74 0b blocks + body text
+        #
+        # We need the DOC magic + layout table stub at the right offsets.
+        # _LAYOUT_SECTION_START = 0x5a0; byte at +5 = 0x01 (footer).
+        LAYOUT_SECTION_START = 0x5a0
+        # Build a minimal file: magic + zero-fill up to layout section + footer
+        # section byte + zero-fill to pre-body zone.
+        prebody_start = LAYOUT_SECTION_START + 10  # after layout section stub
+
+        # Layout section stub: anchor byte in 0x60-0x9f range at +0, 0x00 at +1,
+        # then 4 bytes of filler, with byte +5 = 0x01 (footer).
+        # _section_type_at scans for [0x60-0x9f] 0x00 and reads marker at +5.
+        layout_stub = b'\x60\x00\x00\x00\x00\x01'
+
+        # Pre-body: 22 6d 0b block (8 bytes) + footer text + 00 00 terminator
+        prebody_block = bytes([0x22, 0x6d, 0x0b, 0xfa, 0x0b, 0x00, 0x00, 0x00])
+        footer_text = b'Footer\x02text\x13\x04\x50'
+        prebody_terminator = b'\x00\x00'
+
+        # Body: 3× 1e 74 0b anchors (to win _detect_variant) + body text
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        body_text = b'Body\x02content\x13\x04\x50'
+
+        data = (b'DOC'
+                + b'\x00' * (LAYOUT_SECTION_START - 3)  # pad to layout section
+                + layout_stub
+                + b'\x00' * (prebody_start - LAYOUT_SECTION_START - len(layout_stub))
+                + prebody_block + footer_text + prebody_terminator
+                + body_anchor * 3 + body_text)
+
+        doc = parse(data)
+        self.assertIsNotNone(doc.footer)
+        self.assertIn('Footer', doc.footer.plain_text())
+        self.assertIn('text', doc.footer.plain_text())
+        # Footer text must NOT appear as a body paragraph
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        self.assertNotIn('Footer text', body_texts)
+        self.assertIn('Body content', body_texts)
+
+    def test_1e_body_not_split_by_high_b3_heuristic(self):
+        """Early 1e 74 0b blocks with B3 >= 0x80 must not cause body_start to
+        be pushed forward (the B3 heuristic used for 22 XX files does not apply
+        to 1e files where all blocks are body content)."""
+        # Two blocks with B3 >= 0x80 followed by a block with text.
+        # Without the fix, body_start would land on the third block and the
+        # text from the first two would be routed to the footer.
+        anchor_high = bytes([0x1e, 0x74, 0x0b, 0xcc, 0x10, 0x00, 0x00, 0x00])  # B3=0xcc
+        anchor_high2 = bytes([0x1e, 0x74, 0x0b, 0xfe, 0x0a, 0x00, 0x00, 0x00]) # B3=0xfe
+        anchor_low  = bytes([0x1e, 0x74, 0x0b, 0x08, 0x0e, 0x00, 0x00, 0x00])  # B3=0x08
+        data = (MAGIC
+                + anchor_high * 3          # enough for _detect_variant
+                + b'\x0f\x02' + anchor_high  # 0f 02 separator + high-B3 block
+                + b'First\x13\x04\x50'
+                + b'\x0f\x02' + anchor_high2
+                + b'Second\x13\x04\x50'
+                + b'\x0f\x02' + anchor_low
+                + b'Third\x13\x04\x50')
+
+        doc = parse(data)
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        self.assertIn('First', body_texts)
+        self.assertIn('Second', body_texts)
+        self.assertIn('Third', body_texts)
+        self.assertIsNone(doc.footer)
+
 
 if __name__ == '__main__':
     unittest.main()
