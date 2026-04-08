@@ -456,6 +456,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     except ValueError:
         first_para = 3
 
+    prebody_ctrl_byte = 0  # ctrl byte of the pre-body 22 XX zone in 1e-prefix files
     if _prebody_end > 0:
         # Pre-body zone parse: no body exists in this slice — every block is
         # header/footer content.  Setting body_start = _prebody_end (== n)
@@ -472,7 +473,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         # correctly routed as header/footer.
         body_start = first_para
         prebody_data = data[:first_para]
-        prebody_prefix, _prebody_ctrl = _detect_variant(prebody_data)
+        prebody_prefix, prebody_ctrl_byte = _detect_variant(prebody_data)
         if prebody_prefix == 0x22:
             prebody_doc = parse(prebody_data, _prebody_end=len(prebody_data))
             if prebody_doc.header is not None:
@@ -708,6 +709,22 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         if (prefix_byte != 0x22
                 and data[i] == prefix_byte and i+1 < n and data[i+1] == prefix_byte):
             next_block = data.find(para_ctrl, i + 2)
+            i = next_block if next_block >= 0 else n
+            continue
+
+        # --- Secondary self-referential: 22 prebody_ctrl prebody_ctrl in 1e-prefix body ---
+        # Binary page-layout blobs embedded in 1e-prefix body paragraphs contain the
+        # 22 XX XX self-referential sequence from the pre-body zone's 22 XX variant
+        # (e.g. 22 6d 6d in BINDINDX.HEX, where 0x22='"', 0x6d='m' are printable and
+        # leak as '"mmxd' artefacts).  These sequences are never body text — skip to the
+        # next para_ctrl, identical to the 22 XX XX handler for 22-prefix files.
+        if (prefix_byte != 0x22
+                and prebody_ctrl_byte != 0
+                and i + 2 < n
+                and data[i] == 0x22
+                and data[i+1] == prebody_ctrl_byte
+                and data[i+2] == prebody_ctrl_byte):
+            next_block = data.find(para_ctrl, i + 3)
             i = next_block if next_block >= 0 else n
             continue
 

@@ -1428,6 +1428,39 @@ class Test1eVariant(unittest.TestCase):
         self.assertIn('Third', body_texts)
         self.assertIsNone(doc.footer)
 
+    def test_22_prebody_ctrl_self_referential_suppressed_in_1e_body(self):
+        """In 1e 74 files, binary blobs in the body embed the pre-body zone's
+        22 XX XX self-referential sequence (e.g. 22 6d 6d).  These bytes are
+        printable and would otherwise leak as '"mmxd'-style artefacts.
+        The parser must skip to the next 1e 74 0b block instead of emitting them."""
+        # Construct a 1e 74 file whose pre-body zone uses 22 6d 0b.
+        # pre-body: 22 6d 0b header blocks (enough for _detect_variant to pick 22 6d)
+        prebody_block = bytes([0x22, 0x6d, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        # body: 1e 74 0b blocks (detected as most frequent pair)
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        # Embed a binary blob that contains 22 6d 6d followed by printable junk,
+        # then a real paragraph.
+        blob_with_selfreference = bytes([
+            0x22, 0x6d, 0x6d,   # 22 prebody_ctrl prebody_ctrl — the leaked self-referential
+            0x14, 0x18,         # non-printable bytes (consumed by normal flow)
+            0x78,               # 'x' — printable, should NOT appear in output
+            0x64,               # 'd' — printable, should NOT appear in output
+        ])
+        data = (MAGIC
+                + prebody_block * 3     # 3× 22 6d 0b so _detect_variant sees them in prebody
+                + body_anchor * 3       # 3× 1e 74 0b so _detect_variant picks 1e 74 as body
+                + blob_with_selfreference
+                + body_anchor           # next para_ctrl — skip lands here
+                + b'RealText' + bytes([0x13, 0x04, 0x50]))
+
+        doc = parse(data)
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        combined = ' '.join(body_texts)
+        self.assertIn('RealText', combined)
+        # Printable bytes from the binary blob must not appear
+        self.assertNotIn('"mm', combined)
+        self.assertNotIn('xd', combined)
+
 
 if __name__ == '__main__':
     unittest.main()
