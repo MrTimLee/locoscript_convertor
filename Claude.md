@@ -54,9 +54,9 @@ When implementing a task, either from `Tasks.md` or involving any files tracked 
  3.3 HENCOTES, in the top level directory of the codebase, is a good file to do first testing with. 
  3.4 Additional, more complex examples can be found in `manual_tests`. 
  3.5 Hex dump files are provided alongside those files (`called hex_dump_`)
- 3.6 Research should be capture in a .md file which can then be linked through from Tasks.md and / or Requirements.md
- 3.7 Research document should also propose an implementation plan for fix. The implementation plan should NOT be tracked in git.
- 3.8 Once documented, raise plan for approval before implementation   
+ 3.6 Research should be captured in a .md file (e.g. `Foo Investigation.md`). Investigation documents are **not** tracked in git — they live locally only. Tasks.md and Requirements.md reference them by name only (no hyperlinks).
+ 3.7 The research document should also propose an implementation plan for the fix.
+ 3.8 Once documented, raise plan for approval before implementation
 4. Implement fix
 5. Run tests and confirm all pass
 6. Update documentation (Requirements.md, Tasks.md, etc.)
