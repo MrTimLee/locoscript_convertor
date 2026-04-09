@@ -77,7 +77,9 @@ class Paragraph:
     def __init__(self):
         self.runs: list[TextRun] = []
         self.alignment: str = 'left'  # 'left', 'centre', 'right'
-        self.tab_stops: list[int] = []  # explicit tab stop positions in twips
+        self.tab_stops: list[int] = []   # explicit tab stop positions in twips
+        self.left_indent: int = 0        # left indent in twips (0 = none)
+        self.font_size: float | None = None  # point size (None = document default)
 
     def plain_text(self) -> str:
         return ''.join(r.text for r in self.runs)
@@ -604,10 +606,14 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             continue
 
         # --- Paragraph indent marker: 08 05 01 + 2 param bytes ---
-        # Structural paragraph indent/style marker. Byte-identical in structure to
-        # TAB_SEQ but emits nothing. Without this handler the 2 param bytes (which
-        # are often printable) leak into the output as doubled-pair artefacts.
+        # The doubled-pair value XX encodes one of two things depending on its range:
+        #   XX < 0x20: genuine left indent in scale-pitch units → XX × _twips_per_unit
+        #   XX ≥ 0x20: bibliography/reference paragraph style code — consume silently
+        # (Values ≥ 0x20 are printable ASCII style identifiers, not indent amounts.)
         if data[i:i+3] == PARA_INDENT:
+            xx = data[i + 3] if i + 3 < n else 0
+            if xx < 0x20 and xx > 0 and data[i + 3] == data[i + 4]:
+                current_para.left_indent = xx * _twips_per_unit
             i += 5  # 08 05 01 + 2 indent/param bytes
             continue
 
@@ -758,6 +764,22 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     # based on where this paragraph content block sits in the file.
                     if i >= body_start:
                         current_section = 'body'
+                        # Font size and sub-entry indent for 1e-prefix files.
+                        # B5=0x14 in the block header signals an explicit font size
+                        # encoded in B6 (B6 / 10 = point size):
+                        #   B6=0x78 → 12pt  (small sub-entry font)
+                        #   B6=0x90 → 14.4pt (normal main-entry font)
+                        # B4 ≤ 0x0c additionally marks a sub-entry indent level;
+                        # a fixed 576-twip (0.4") indent is applied if no PARA_INDENT
+                        # (08 05 01 XX XX) has already set left_indent for this para.
+                        if prefix_byte != 0x22 and i + 6 < n:
+                            b4 = data[i + 4]
+                            b5 = data[i + 5]
+                            b6 = data[i + 6]
+                            if b5 == 0x14:
+                                current_para.font_size = b6 / 10.0
+                            if b4 <= 0x0c and current_para.left_indent == 0:
+                                current_para.left_indent = 576  # 0.4 inch fallback
                         # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
                         # the body signals a paragraph boundary (these documents use
                         # 22 XX 0b pairs rather than 13 04 50 between paragraphs).

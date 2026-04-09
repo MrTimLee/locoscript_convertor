@@ -1518,5 +1518,160 @@ class Test1eVariant(unittest.TestCase):
         self.assertNotIn('@', combined)
 
 
+class TestParaIndent(unittest.TestCase):
+    """Tests for PARA_INDENT (08 05 01 XX XX) left_indent and bibliography style codes."""
+
+    # Default _twips_per_unit for synthetic docs (scale_pitch 0x18 × 6 = 144)
+    TWU = 0x18 * 6  # 144
+
+    def _doc_with_indent(self, xx: int) -> bytes:
+        """Build a one-paragraph doc with a PARA_INDENT byte of XX (doubled)."""
+        indent_seq = bytes([0x08, 0x05, 0x01, xx, xx])
+        return _doc(indent_seq + b'Hello\x13\x04\x50')
+
+    def test_para_indent_below_0x20_sets_left_indent(self):
+        """XX = 0x0a (< 0x20) must set left_indent = 0x0a × 144 = 1440."""
+        doc = parse(self._doc_with_indent(0x0a))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 0x0a * self.TWU)
+
+    def test_para_indent_at_0x20_not_an_indent(self):
+        """XX = 0x20 (>= 0x20) is a bibliography style code — left_indent must stay 0."""
+        doc = parse(self._doc_with_indent(0x20))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 0)
+
+    def test_para_indent_zero_not_set(self):
+        """XX = 0x00 must not set left_indent (zero is not a valid indent)."""
+        doc = parse(self._doc_with_indent(0x00))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 0)
+
+    def test_para_indent_not_emitted_as_text(self):
+        """The PARA_INDENT sequence bytes must not appear in plain text output."""
+        data = self._doc_with_indent(0x4a)  # 0x4a = 'J', >= 0x20 style code
+        result = _plain(data)
+        self.assertNotIn('J', result)
+        self.assertIn('Hello', result)
+
+    def test_rtf_emits_li_for_indented_para(self):
+        """RTF output must contain \\li{twips} when left_indent > 0."""
+        from converter import to_rtf
+        doc = parse(self._doc_with_indent(0x0a))
+        rtf = to_rtf(doc)
+        expected = rf'\li{0x0a * self.TWU}'
+        self.assertIn(expected, rtf)
+
+    def test_rtf_no_li_for_unindented_para(self):
+        """RTF output must not contain \\li when left_indent == 0."""
+        from converter import to_rtf
+        doc = parse(_doc(b'Hello\x13\x04\x50'))
+        rtf = to_rtf(doc)
+        self.assertNotIn(r'\li', rtf)
+
+    def test_docx_sets_left_indent(self):
+        """DOCX output must set paragraph_format.left_indent when left_indent > 0."""
+        import tempfile, os
+        from converter import save_docx
+        from docx.shared import Twips
+        doc = parse(self._doc_with_indent(0x0a))
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            path = f.name
+        try:
+            save_docx(doc, Path(path))
+            from docx import Document as DocxDoc
+            d = DocxDoc(path)
+            body_paras = [p for p in d.paragraphs if p.text.strip()]
+            self.assertGreater(len(body_paras), 0)
+            self.assertEqual(body_paras[0].paragraph_format.left_indent,
+                             Twips(0x0a * self.TWU))
+        finally:
+            os.unlink(path)
+
+
+class TestFontSizeFrom1eVariant(unittest.TestCase):
+    """Tests for B5/B6 font-size encoding in 1e 74 variant files."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e_with_block(self, b3: int, b4: int, b5: int, b6: int,
+                           b7: int = 0x00) -> bytes:
+        """Build a 1e 74 file with a body block whose header is B3..B7.
+
+        Pre-detection anchors use B4=0x0d (> 0x0c) so they don't set
+        left_indent before the test body block is reached.
+        """
+        # B4=0x0d: above the sub-entry threshold, won't trigger indent fallback
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        body_block = self.PARA_CTRL_1E + bytes([b3, b4, b5, b6, b7])
+        return MAGIC + detect_anchor * 3 + body_block + b'Hello\x13\x04\x50'
+
+    def test_b5_0x14_sets_font_size(self):
+        """When B5=0x14 in a 1e 74 body block, font_size must be B6 / 10.0."""
+        # B6=0x78 → 12.0pt
+        doc = parse(self._doc_1e_with_block(0xcc, 0x10, 0x14, 0x78))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertAlmostEqual(paras[0].font_size, 12.0)
+
+    def test_b5_0x14_large_b6_sets_font_size(self):
+        """B6=0x90 → 14.4pt."""
+        doc = parse(self._doc_1e_with_block(0xcc, 0x0d, 0x14, 0x90))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertAlmostEqual(paras[0].font_size, 14.4)
+
+    def test_b5_not_0x14_no_font_size(self):
+        """When B5 != 0x14, font_size must remain None."""
+        doc = parse(self._doc_1e_with_block(0x00, 0x0d, 0x00, 0x78))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertIsNone(paras[0].font_size)
+
+    def test_b4_lte_0x0c_sets_indent_fallback(self):
+        """B4 <= 0x0c in a 1e 74 body block must set left_indent = 576."""
+        doc = parse(self._doc_1e_with_block(0xcc, 0x0c, 0x00, 0x00))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 576)
+
+    def test_b4_gt_0x0c_no_indent_fallback(self):
+        """B4 > 0x0c in a 1e 74 body block must leave left_indent = 0."""
+        doc = parse(self._doc_1e_with_block(0xcc, 0x0d, 0x00, 0x00))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 0)
+
+    def test_rtf_emits_fs_for_font_size(self):
+        """RTF output must contain \\fs{half_pts} when font_size is set."""
+        from converter import to_rtf
+        # B6=0x78 → 12.0pt → \fs24
+        doc = parse(self._doc_1e_with_block(0xcc, 0x10, 0x14, 0x78))
+        rtf = to_rtf(doc)
+        self.assertIn(r'\fs24', rtf)
+
+    def test_rtf_no_fs_when_no_font_size(self):
+        """RTF output must not contain \\fs when font_size is None."""
+        from converter import to_rtf
+        doc = parse(_doc(b'Hello\x13\x04\x50'))
+        rtf = to_rtf(doc)
+        self.assertNotIn(r'\fs', rtf)
+
+    def test_docx_sets_font_size(self):
+        """DOCX output must set run.font.size when font_size is set."""
+        import tempfile, os
+        from converter import save_docx
+        from docx.shared import Pt
+        # B6=0x78 → 12.0pt
+        doc = parse(self._doc_1e_with_block(0xcc, 0x10, 0x14, 0x78))
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            path = f.name
+        try:
+            save_docx(doc, Path(path))
+            from docx import Document as DocxDoc
+            d = DocxDoc(path)
+            body_paras = [p for p in d.paragraphs if p.text.strip()]
+            self.assertGreater(len(body_paras), 0)
+            run = body_paras[0].runs[0]
+            self.assertEqual(run.font.size, Pt(12.0))
+        finally:
+            os.unlink(path)
+
+
 if __name__ == '__main__':
     unittest.main()

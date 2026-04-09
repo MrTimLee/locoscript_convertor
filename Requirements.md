@@ -161,7 +161,15 @@ Three-byte sequence. If italic is currently active it acts as "italic off" (end 
 Five bytes total. Emits a tab character (`\t`) in the output. The first param byte (`XX`) encodes the **explicit tab column position** in scale pitch units (`XX × twips_per_unit` gives the RTF `\tx` position). A zero value means no explicit position. The second param byte is always the same value (doubled-pair pattern) and is consumed along with the first.
 
 ### Paragraph Indent Marker — `08 05 01` + 2 param bytes
-Five bytes total. Structural paragraph indent/style marker. Emits nothing. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
+Five bytes total. Structural paragraph indent/style marker. Emits nothing. The doubled-pair value XX (where data[i+3] == data[i+4]) encodes one of two things:
+
+| XX range | Meaning | Action |
+|----------|---------|--------|
+| `0x01`–`0x1F` | Left indent in scale pitch units | Set `para.left_indent = XX × twips_per_unit` |
+| `0x20`+ | Bibliography/reference paragraph style code | Consume silently — these are style identifiers, not indent amounts |
+| `0x00` | No indent | Consume silently |
+
+Every XX ≥ `0x20` occurrence across real sample files (HENCOTES, BUILDNGS, BINDINDX.HEX) is followed by a book or reference title, confirming the style-code interpretation. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
 
 ### ENQ Extended Character — `05 base 01 diacritic 01`
 A five-byte sequence encoding an accented or extended character:
@@ -286,7 +294,8 @@ The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (doubl
   In all cases the entire block (up to the next `1e 74 0b`) is skipped.
 - **Per-page LocoScript control labels:** some `1e 74` body blocks accumulate text such as `"Last page Header / Footer disabled?"` before encountering a `07 03` page-break marker. These are per-page LocoScript UI metadata labels, not document content. When `07 03` is seen in the main parse loop (for `1e`-prefix files), any accumulated text is discarded and the parser jumps to the next `1e 74 0b`.
 - **Scale pitch:** `0x14` (12cpi) in `BINDINDX.HEX`, giving `twips_per_unit = 120`.
-- **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). These bytes are consumed as part of the block skip; no output mapping is currently applied.
+- **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). The parser sets `para.font_size = B6 / 10.0` on the current paragraph. RTF output adds `\fs{int(font_size×2)}` before run content; DOCX sets `run.font.size = Pt(font_size)`.
+- **B4 sub-entry indent:** B4 ≤ `0x0c` marks a sub-entry (indented) paragraph; a fixed 576-twip (0.4") indent is applied via `para.left_indent = 576` when no explicit `08 05 01 XX XX` PARA_INDENT has already set the indent. B4 ≥ `0x0d` is a top-level (unindented) entry.
 
 ### Control Type `0b` — Paragraph Content Block
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:

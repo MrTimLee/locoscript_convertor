@@ -46,14 +46,23 @@ xxd <filename> > hex_dump
 When implementing a task, either from `Tasks.md` or involving any files tracked in the repo:
 
 0. Read Tasks.md and look for open tasks.
-1. Pick task and confirm understanding and agree is the next thing to do
+1. Pick task, confirm understanding and agree is the next thing to do
 2. Create a feature branch (e.g. `git checkout -b feature/my-task`)
-3. Develop fix
-4. Run tests and confirm all pass
-5. Update documentation (Requirements.md, Tasks.md, etc.)
-6. Raise PR and tell me it's ready for review
-7. Commit / merge
-8. Tidy up any stale branches
+3. Investigate fix.
+ 3.1 If fix is complicated, do research. 
+ 3.2 Research will usually involve elements of the debugging new binary patterns defined below.
+ 3.3 HENCOTES, in the top level directory of the codebase, is a good file to do first testing with. 
+ 3.4 Additional, more complex examples can be found in `manual_tests`. 
+ 3.5 Hex dump files are provided alongside those files (`called hex_dump_`)
+ 3.6 Research should be capture in a .md file which can then be linked through from Tasks.md and / or Requirements.md
+ 3.7 Research document should also propose an implementation plan for fix. The implementation plan should NOT be tracked in git.
+ 3.8 Once documented, raise plan for approval before implementation   
+4. Implement fix
+5. Run tests and confirm all pass
+6. Update documentation (Requirements.md, Tasks.md, etc.)
+7. Raise PR and tell me it's ready for review
+8. Commit / merge
+9. Tidy up any stale branches
 
 Do **not** commit task work directly to `main`.
 
@@ -69,6 +78,6 @@ When a new sample file produces garbled output, the workflow that works:
 5. Cross-reference against the **Locoscript 2 Binary Format Reference** in `Requirements.md` to identify which pattern is involved
 6. Add a targeted fix to `_skip_ctrl_sequence()` in `parser.py` for structural skips, or to the main loop in `parse()` for new control codes
 7. Write a pattern unit test in `tests/test_parser.py` that reproduces the artifact with a minimal synthetic byte sequence
-8. Verify all 23 existing tests still pass before committing
+8. Verify all existing tests still pass before committing
 
 The most common source of new artifacts is an unrecognised variant of the `22 61 0b` paragraph content block — check the bytes at offsets +3 through +8 relative to the `22 61 0b` marker first.

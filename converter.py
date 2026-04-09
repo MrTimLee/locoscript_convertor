@@ -84,7 +84,9 @@ def _rtf_para(para: 'Paragraph') -> str:
         return ''
     align = _rtf_align.get(para.alignment, '')
     tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
-    return r'\pard' + align + tab_stops + ' ' + ' '.join(parts) + r'\par'
+    indent = rf'\li{para.left_indent}' if para.left_indent else ''
+    font_size = rf'\fs{int(para.font_size * 2)}' if para.font_size is not None else ''
+    return r'\pard' + align + indent + tab_stops + font_size + ' ' + ' '.join(parts) + r'\par'
 
 
 def to_rtf(doc: Document) -> str:
@@ -164,6 +166,8 @@ def save_docx(doc: Document, dest: Path) -> None:
         p = container.add_paragraph()
         if para.alignment in _docx_align:
             p.alignment = _docx_align[para.alignment]
+        if para.left_indent:
+            p.paragraph_format.left_indent = Twips(para.left_indent)
         _apply_tab_stops(p, para.tab_stops)
         for run in para.runs:
             if not run.text.strip():
@@ -174,6 +178,8 @@ def save_docx(doc: Document, dest: Path) -> None:
             if run.underline:    r.underline = True
             if run.superscript:  r.font.superscript = True
             if run.subscript:    r.font.subscript = True
+            if para.font_size is not None:
+                r.font.size = Pt(para.font_size)
 
     section = docx.sections[0]
 
