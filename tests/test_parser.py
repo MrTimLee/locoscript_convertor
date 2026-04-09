@@ -1750,5 +1750,54 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
             os.unlink(path)
 
 
+class Test1e78ScanForwardGuard(unittest.TestCase):
+    """Regression tests for the 78 00 scan-forward guard in _skip_ctrl_sequence.
+
+    In 22-prefix non-0x61 files (22 6d, 22 42) a block with B6=0x78 B7=0x00 is
+    a section-start marker and triggers a scan-forward to the next alignment/ctrl
+    marker.  In 1e-prefix files the same B6/B7 bytes encode a 12pt font size
+    (B5=0x14 B6=0x78) and must use the standard 8-byte skip.  If the scan-forward
+    fires in a 1e file it consumes the entire following paragraph, causing the next
+    entry (e.g. 'Beacon Grange') to inherit a stale left_indent from the scanned
+    block's B4 value.
+    """
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        return MAGIC + anchor * 3 + body
+
+    def test_1e_78_00_block_does_not_scan_forward(self):
+        """A 1e 74 0b block with B5=0x14 B6=0x78 B7=0x00 must use the 8-byte skip.
+
+        Previously the 78 00 scan-forward (designed for 22 6d section-start markers)
+        incorrectly fired on this block because ctrl_byte=0x74 != 0x61.  This caused
+        the scan to consume all bytes up to the next 1e 74 ctrl_prefix, losing the
+        intervening paragraph text and applying a stale B4 indent to the next entry.
+        """
+        # Block A: B4=0x08 (<=0x0c, sub-entry candidate), B5=0x14, B6=0x78, B7=0x00
+        # The B6/B7 pattern looks like '78 00' but means '12pt font' in 1e files.
+        block_a = self.PARA_CTRL_1E + bytes([0x1c, 0x08, 0x14, 0x78, 0x00])
+        text_a = b'First\x13\x04\x50'
+        # Block B: B4=0x0e (>0x0c, top-level) — must NOT be indented
+        para_sep = bytes([0x0f, 0x02])
+        block_b = self.PARA_CTRL_1E + bytes([0x60, 0x0e, 0x14, 0x90, 0x00])
+        trailing_b = bytes([0x01, 0x0d, 0x0d])
+        text_b = b'Second\x13\x04\x50'
+        data = self._doc_1e(block_a + text_a + para_sep + block_b + trailing_b + text_b)
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        # Both paragraphs must be extracted (scan-forward would eat 'First' text)
+        texts = [p.plain_text().strip() for p in paras]
+        self.assertIn('First', texts, 'First paragraph was consumed by incorrect scan-forward')
+        self.assertIn('Second', texts, 'Second paragraph missing')
+        # Second paragraph (Block B: B4=0x0e) must NOT be indented
+        second = next(p for p in paras if 'Second' in p.plain_text())
+        self.assertEqual(second.left_indent, 0,
+                         'Block B with B4=0x0e must not be indented; '
+                         'stale B4 from Block A must not bleed through')
+
+
 if __name__ == '__main__':
     unittest.main()

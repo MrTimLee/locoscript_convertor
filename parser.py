@@ -338,16 +338,19 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
             # a normal top-level entry marker, not a structural indicator.
             next_block = data.find(para_ctrl, i + 5)
             i = next_block if next_block >= 0 else n
-        elif (i + 7 < n and ctrl_byte != 0x61 and data[i+3] < 0x80
+        elif (i + 7 < n and prefix_byte == 0x22 and ctrl_byte != 0x61 and data[i+3] < 0x80
               and data[i+6] == 0x78 and data[i+7] == 0x00):
-            # 78 00 block without a valid extended-variant doubled pair, in a non-0x61
-            # variant file (22 6d, 22 42, etc.).  These are section-start markers
+            # 78 00 block without a valid extended-variant doubled pair, in a 22-prefix
+            # non-0x61 variant file (22 6d, 22 42, etc.).  These are section-start markers
             # (e.g. "22 6d 0b 42 0d 14 78 00") that carry variable-length structural
             # trailing bytes (separator bytes, column widths, etc.) containing
             # printable values that must not be emitted as text.  Scan forward past
             # the trailing bytes to the next alignment marker (0x11 DC1) or control
             # prefix (PP XX).  Standard 22 61 files never use this trailing structure
             # — their 78 00 blocks use the default 8-byte skip.
+            # NOTE: restricted to prefix_byte == 0x22 — in 1e-prefix files B6=0x78
+            # B7=0x00 encodes the 12pt font size (B5=0x14 flag), NOT a structural marker.
+            # Applying the scan-forward in a 1e file would consume entire paragraphs.
             i += 8
             while i + 1 < n:
                 if data[i] == 0x11 or (data[i] == prefix_byte and data[i + 1] == ctrl_byte):
