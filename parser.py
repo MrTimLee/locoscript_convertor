@@ -326,13 +326,16 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
             # indent marker (B9 == B10, both ≥ 0x20).  Structural header blocks
             # (B3 ≥ 0x80, B4 = 0x0e) are excluded.
             i += 11
-        elif i + 4 < n and data[i+3] >= 0x80 and data[i+4] == 0x0e:
+        elif (i + 4 < n and prefix_byte == 0x22
+              and data[i+3] >= 0x80 and data[i+4] == 0x0e):
             # Any 0b block with a high B3 byte (≥0x80) and 0x0e at B4 is a
             # structural section/layout header with no body text (e.g. c4 0e
             # in standard files, a6 0e / 88 0e / 84 0e in 22 6d variant files).
             # Low-B3 values (e.g. 3a 0e, 36 0e) are normal content blocks and
             # use the default 8-byte skip.  Skip to the next paragraph content
             # block (may be far ahead, past a binary metadata blob).
+            # NOTE: this heuristic is 22-prefix only. In 1e files B4=0x0e is
+            # a normal top-level entry marker, not a structural indicator.
             next_block = data.find(para_ctrl, i + 5)
             i = next_block if next_block >= 0 else n
         elif (i + 7 < n and ctrl_byte != 0x61 and data[i+3] < 0x80
@@ -776,9 +779,14 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                             b4 = data[i + 4]
                             b5 = data[i + 5]
                             b6 = data[i + 6]
-                            if b5 == 0x14:
+                            # Guard: don't apply font/indent from a page-break block
+                            # (B5=0x14 AND B8=0x07 signals the B8/B9 page-break form).
+                            # Such blocks are jumped over below; setting font_size here
+                            # would bleed the value into the next paragraph.
+                            _is_pagebreak = (i + 8 < n and b5 == 0x14 and data[i + 8] == 0x07)
+                            if b5 == 0x14 and not _is_pagebreak:
                                 current_para.font_size = b6 / 10.0
-                            if b4 <= 0x0c and current_para.left_indent == 0:
+                            if b4 <= 0x0c and not _is_pagebreak and current_para.left_indent == 0:
                                 current_para.left_indent = 576  # 0.4 inch fallback
                         # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
                         # the body signals a paragraph boundary (these documents use

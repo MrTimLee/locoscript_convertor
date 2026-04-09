@@ -1518,6 +1518,50 @@ class Test1eVariant(unittest.TestCase):
         self.assertNotIn('@', combined)
 
 
+class Test1eStructuralSkipGuard(unittest.TestCase):
+    """B3 >= 0x80 and B4 == 0x0e must NOT skip content in 1e-prefix files."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        detect = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        return MAGIC + detect * 3 + body
+
+    def test_high_b3_b4_0e_content_not_skipped_in_1e_file(self):
+        """In a 1e file, 1e 74 0b with B3=0x9a (>=0x80) and B4=0x0e must NOT
+        be treated as a structural skip — its text content must appear."""
+        # Block with B3=0x9a, B4=0x0e, B5=0x14, B6=0x90 — formerly wrongly skipped
+        block = self.PARA_CTRL_1E + bytes([0x9a, 0x0e, 0x14, 0x90, 0x00])
+        sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        data = self._doc_1e(block + b'TopEntry' + sep + b'Next\x13\x04\x50')
+        paras = [p.plain_text() for p in parse(data).paragraphs if p.plain_text().strip()]
+        self.assertIn('TopEntry', paras)
+
+    def test_high_b3_b4_0e_font_size_set_in_1e_file(self):
+        """In a 1e file, B5=0x14 B6=0x90 in a high-B3 B4=0x0e block must still
+        set font_size on that paragraph (not bleed into the next one)."""
+        block = self.PARA_CTRL_1E + bytes([0x9a, 0x0e, 0x14, 0x90, 0x00])
+        sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        data = self._doc_1e(block + b'TopEntry' + sep + b'NextEntry\x13\x04\x50')
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        top   = next(p for p in paras if 'TopEntry'   in p.plain_text())
+        nxt   = next(p for p in paras if 'NextEntry'  in p.plain_text())
+        self.assertAlmostEqual(top.font_size, 14.4)
+        self.assertIsNone(nxt.font_size)
+
+    def test_high_b3_b4_0e_still_skipped_in_22_file(self):
+        """In a standard 22 61 file, B3>=0x80 B4=0x0e must still be treated as
+        a structural skip (existing behaviour must be preserved)."""
+        # structural block with B3=0xc4, B4=0x0e — should be skipped
+        structural = PARA_CTRL + bytes([0xc4, 0x0e, 0x00, 0x00, 0x00])
+        normal     = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + normal + structural + b'JUNK' + normal + b'Real\x13\x04\x50'
+        result = _plain(data)
+        self.assertIn('Real', result)
+        self.assertNotIn('JUNK', result)
+
+
 class TestParaIndent(unittest.TestCase):
     """Tests for PARA_INDENT (08 05 01 XX XX) left_indent and bibliography style codes."""
 
