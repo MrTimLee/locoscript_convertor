@@ -700,9 +700,10 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     superscript = False
             i += 2
             # Skip optional non-printable param bytes.
-            # Exclude 0x02 (WORD_SEP), 0x06 (hyphen/space) and 0x13 (formatting prefix)
-            # as these are content bytes that must be handled by the main loop.
-            while i < n and data[i] < 0x20 and data[i] not in (WORD_SEP, 0x06, 0x13):
+            # Exclude 0x02 (WORD_SEP), 0x06 (hyphen/space), 0x0f (SI — starts 0f 02
+            # paragraph separators and 0f 04/05 tab sequences), and 0x13 (formatting
+            # prefix) as these are structural bytes that must be handled by the main loop.
+            while i < n and data[i] < 0x20 and data[i] not in (WORD_SEP, 0x06, 0x0f, 0x13):
                 i += 1
             # Skip optional doubled-pair indent marker
             if i+1 < n and data[i] == data[i+1] and data[i] >= min_dp:

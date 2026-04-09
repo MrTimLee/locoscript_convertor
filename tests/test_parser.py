@@ -1518,6 +1518,25 @@ class Test1eVariant(unittest.TestCase):
         self.assertNotIn('@', combined)
 
 
+class TestInlineFormattingParamConsumption(unittest.TestCase):
+    """0x0f must not be consumed as a non-printable param after inline formatting."""
+
+    def test_0f_not_consumed_as_bold_off_param(self):
+        """09 00 0f 02 PP ctrl 0b: the 0f must survive as a paragraph separator
+        in non-0x61 files, not be swallowed as a parameter byte of bold-off.
+        Uses 1e 74 variant where 0f 02 is the paragraph separator pattern."""
+        PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+        detect_anchor = PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        bold_off = bytes([0x09, 0x00])
+        sep = bytes([0x0f, 0x02]) + PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        body_anchor = PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        data = MAGIC + detect_anchor * 3 + body_anchor + b'First' + bold_off + sep + b'Second\x13\x04\x50'
+        paras = [p.plain_text() for p in parse(data).paragraphs if p.plain_text().strip()]
+        self.assertIn('First', paras)
+        self.assertIn('Second', paras)
+        self.assertEqual(len([p for p in paras if 'First' in p or 'Second' in p]), 2)
+
+
 class Test1eStructuralSkipGuard(unittest.TestCase):
     """B3 >= 0x80 and B4 == 0x0e must NOT skip content in 1e-prefix files."""
 
