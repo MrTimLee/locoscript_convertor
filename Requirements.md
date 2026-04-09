@@ -277,7 +277,14 @@ The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (doubl
 
 - **Doubled-pair threshold:** all indent values in `1e 74` files fall in `0x00–0x1f`, so the `>= 0x20` threshold is dropped to `>= 0x00` for these files.
 - **Self-referential sequence:** `1e 1e 74 01 00 00 00 23` (analogous to `22 61 61`) — always binary layout metadata, never body text. The parser skips directly to the next `1e 74 0b` block.
+- **`22 6d 6d` embedded in body blobs:** the pre-body zone's `22 6d` self-referential sequence (`22 6d 6d`) can appear inside `1e 74` body binary blobs. Detected using `prebody_ctrl_byte` (the ctrl byte discovered by running `_detect_variant` on the pre-body slice); when seen, the parser skips to the next `1e 74 0b` block, preventing `"mmxd`-style text artefacts.
 - **`0f 00 1e 74 0b` (section boundary):** always preceded by the self-referential sequence. After the sequence skip lands on `1e 74 0b`, this is treated silently (no paragraph flush).
+- **Page-break binary blobs:** `1e 74 0b` blocks that signal a page break are identified by a `07 03` marker at one of three positions within the block header. Three forms confirmed in BINDINDX.HEX:
+  - `1e 74 0b B3 B4 07 03 …` — `07 03` at B5/B6 (standard MEMORIAL-style, already handled)
+  - `1e 74 0b cc 10 14 90 00 07 03 …` — B5=`0x14` (font-size bytes) shifts marker to B8/B9
+  - `1e 74 0b ae 10 02 07 03 00 …` — extra param byte shifts marker to B6/B7
+  In all cases the entire block (up to the next `1e 74 0b`) is skipped.
+- **Per-page LocoScript control labels:** some `1e 74` body blocks accumulate text such as `"Last page Header / Footer disabled?"` before encountering a `07 03` page-break marker. These are per-page LocoScript UI metadata labels, not document content. When `07 03` is seen in the main parse loop (for `1e`-prefix files), any accumulated text is discarded and the parser jumps to the next `1e 74 0b`.
 - **Scale pitch:** `0x14` (12cpi) in `BINDINDX.HEX`, giving `twips_per_unit = 120`.
 - **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). These bytes are consumed as part of the block skip; no output mapping is currently applied.
 
