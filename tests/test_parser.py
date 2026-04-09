@@ -1689,10 +1689,24 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         self.assertIsNone(paras[0].font_size)
 
     def test_b4_lte_0x0c_sets_indent_fallback(self):
-        """B4 <= 0x0c in a 1e 74 body block must set left_indent = 576."""
+        """B4 <= 0x0c in a 1e 74 body block with no trailing pair must set left_indent = 576."""
         doc = parse(self._doc_1e_with_block(0xcc, 0x0c, 0x00, 0x00))
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 576)
+
+    def test_b4_lte_0x0c_with_trailing_pair_no_indent(self):
+        """B4 <= 0x0c WITH a trailing 01 XX XX pair must NOT indent.
+        Top-level index entries (e.g. 'Bell, Henry & Sons') have B4 <= 0x0c but
+        always have a trailing pair; only genuine cross-reference sub-entries
+        (e.g. 'see Cockshaw') lack the trailing pair and should be indented."""
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        # body block: B4=0x09 (≤ 0x0c) followed by trailing 01 2b 2b
+        body_block = self.PARA_CTRL_1E + bytes([0xcc, 0x09, 0x00, 0x00, 0x00])
+        trailing_pair = bytes([0x01, 0x2b, 0x2b])
+        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello\x13\x04\x50'
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 0)
 
     def test_b4_gt_0x0c_no_indent_fallback(self):
         """B4 > 0x0c in a 1e 74 body block must leave left_indent = 0."""

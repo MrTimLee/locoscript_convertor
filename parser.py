@@ -763,6 +763,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     current_text.append(chr(ctrl_byte))
                 i += 2
             else:
+                _pending_b4_indent = False
                 if ctrl_type == 0x0b:
                     # Position-based section routing: update current_section
                     # based on where this paragraph content block sits in the file.
@@ -788,7 +789,10 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                             if b5 == 0x14 and not _is_pagebreak:
                                 current_para.font_size = b6 / 10.0
                             if b4 <= 0x0c and not _is_pagebreak and current_para.left_indent == 0:
-                                current_para.left_indent = 576  # 0.4 inch fallback
+                                # Defer indent: only apply if no trailing 01 XX XX pair follows
+                                # the block (cross-reference sub-entries have no trailing pair;
+                                # top-level entries with large trailing pairs must not be indented).
+                                _pending_b4_indent = True
                         # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
                         # the body signals a paragraph boundary (these documents use
                         # 22 XX 0b pairs rather than 13 04 50 between paragraphs).
@@ -829,12 +833,18 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         i = next_ctrl if next_ctrl >= 0 else n
                         continue
                 i = _skip_ctrl_sequence(data, i, ctrl_byte, prefix_byte)
+                i_after_skip = i
                 # Skip trailing indent metadata: 00 01 + doubled pair
                 if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
                     i += 4
                 # Fallback: 01 XX XX (3-byte) trailing indent (e.g. HENCOTES first body para)
                 elif i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= min_dp:
                     i += 3
+                # B4 sub-entry indent: apply only when no trailing pair was consumed.
+                # Entries with a trailing pair are top-level; entries without are genuine
+                # indented cross-references (e.g. "see Cockshaw", "see Fore Street").
+                if _pending_b4_indent and i == i_after_skip:
+                    current_para.left_indent = 576  # 0.4 inch fallback
             continue
 
         # --- Word separator: 02 ---
