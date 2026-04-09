@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from parser import (parse, ParseError, Document, Paragraph, TextRun,
-                    _detect_ctrl_byte, _find_body_start, _find_footer_start)
+                    _detect_variant, _find_body_start, _find_footer_start)
 from converter import to_txt
 
 
@@ -750,28 +750,34 @@ class TestVariableCtrlPrefix(unittest.TestCase):
     def _doc_m(self, body: bytes) -> bytes:
         return self._HEADER_M + body
 
-    def test_detect_ctrl_byte_standard(self):
-        # Standard files (22 61 0b) return 0x61
+    def test_detect_variant_standard(self):
+        # Standard files (22 61 0b) return (0x22, 0x61)
         data = _doc(b'Hello')
-        self.assertEqual(_detect_ctrl_byte(data), 0x61)
+        self.assertEqual(_detect_variant(data), (0x22, 0x61))
 
-    def test_detect_ctrl_byte_variant(self):
-        # Variant files (22 6d 0b) return 0x6d
+    def test_detect_variant_22_6d(self):
+        # Variant files (22 6d 0b) return (0x22, 0x6d)
         data = self._doc_m(b'Hello')
-        self.assertEqual(_detect_ctrl_byte(data), 0x6d)
+        self.assertEqual(_detect_variant(data), (0x22, 0x6d))
 
-    def test_detect_ctrl_byte_fallback(self):
-        # No 22 XX 0b sequence at all → default 0x61
-        self.assertEqual(_detect_ctrl_byte(b'DOC' + b'\x00' * 10), 0x61)
+    def test_detect_variant_fallback(self):
+        # No recognised sequence at all → default (0x22, 0x61)
+        self.assertEqual(_detect_variant(b'DOC' + b'\x00' * 10), (0x22, 0x61))
 
-    def test_detect_ctrl_byte_prefers_most_frequent(self):
+    def test_detect_variant_prefers_most_frequent(self):
         # When header uses 0x61 but body uses 0x42 (like Memorial.002),
-        # the most-frequent value (0x42) should be returned, not the first (0x61).
+        # the most-frequent pair (0x22, 0x42) should win, not the first.
         para_ctrl_61 = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
         para_ctrl_42 = bytes([0x22, 0x42, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
-        # 1× 0x61 (header) + 3× 0x42 (body) → most frequent is 0x42
+        # 1× 0x61 (header) + 3× 0x42 (body) → most frequent is (0x22, 0x42)
         data = MAGIC + para_ctrl_61 + para_ctrl_42 * 3 + b'Hello'
-        self.assertEqual(_detect_ctrl_byte(data), 0x42)
+        self.assertEqual(_detect_variant(data), (0x22, 0x42))
+
+    def test_detect_variant_1e_74(self):
+        # 1e 74 prefix variant: returns (0x1e, 0x74)
+        para_ctrl_1e = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + para_ctrl_1e * 3 + b'Hello'
+        self.assertEqual(_detect_variant(data), (0x1e, 0x74))
 
     def test_22_6d_file_produces_content(self):
         # A 22 6d file must yield the body text rather than garbage
@@ -1287,6 +1293,229 @@ class TestBodyStartDetection22_6d(unittest.TestCase):
         result = _plain(data)
         # '1827' must be present — the scan must not skip over it
         self.assertIn('1827', result)
+
+
+class Test1eVariant(unittest.TestCase):
+    """Tests for the 0x1e prefix byte (1e 74 0b) variant."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        """Minimal envelope for 1e 74 variant: 3× para_ctrl blocks so _detect_variant
+        sees enough 1e 74 0b occurrences to win the frequency count."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        return MAGIC + anchor * 3 + body
+
+    def test_0f_02_1e_74_0b_paragraph_break(self):
+        """0f 02 1e 74 0b must flush the current paragraph and start a new one."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + anchor * 3 + b'First' + sep + b'Second\x13\x04\x50'
+        paras = _paras(data)
+        self.assertIn('First', paras)
+        self.assertIn('Second', paras)
+
+    def test_0f_01_1e_74_0b_line_break(self):
+        """0f 01 1e 74 0b must emit a line break within the current paragraph."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        sep = bytes([0x0f, 0x01]) + self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + anchor * 3 + b'Line1' + sep + b'Line2\x13\x04\x50'
+        result = _plain(data)
+        self.assertIn('Line1', result)
+        self.assertIn('Line2', result)
+        self.assertIn('\n', result)
+
+    def test_doubled_pair_below_0x20_consumed(self):
+        """In 1e variant files, doubled-pair indent values < 0x20 must be consumed,
+        not leaked as text. Here 01 04 04 should not produce chr(4) in output."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        # After paragraph break, 01 04 04 is the trailing doubled-pair indent
+        body = b'Hello\x13\x04\x50\x01\x04\x04' + anchor + b'World\x13\x04\x50'
+        data = MAGIC + anchor * 3 + body
+        result = _plain(data)
+        self.assertIn('Hello', result)
+        self.assertIn('World', result)
+        self.assertNotIn('\x04', result)
+
+    def test_doubled_prefix_1e_1e_skipped(self):
+        """1e 1e 74 self-referential sequence must be skipped entirely;
+        no artefact bytes (e.g. 0x23 '#') must appear in the output."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        # Self-referential sequence followed by 5 metadata bytes
+        self_ref = bytes([0x1e, 0x1e, 0x74, 0x01, 0x00, 0x00, 0x00, 0x23])
+        body = b'Before' + self_ref + anchor + b'After\x13\x04\x50'
+        data = MAGIC + anchor * 3 + body
+        result = _plain(data)
+        self.assertIn('Before', result)
+        self.assertIn('After', result)
+        self.assertNotIn('#', result)
+
+    def test_1e_variant_basic_text(self):
+        """A 1e 74 file with plain text and word separators must parse correctly."""
+        data = self._doc_1e(b'Hello\x02world\x13\x04\x50')
+        self.assertEqual(_plain(data), 'Hello world')
+
+    def test_1e_footer_extracted_from_22_prebody_zone(self):
+        """Footer text in the 22 6d pre-body zone of a 1e 74 file must be
+        extracted correctly and must not appear as a body paragraph."""
+        # Build a synthetic 1e 74 file whose pre-body zone contains a 22 6d 0b
+        # footer paragraph followed by 1e 74 0b body paragraphs.
+        #
+        # Pre-body zone: 22 6d 0b block (B3=0xfa, non-structural) + footer text
+        # Layout section byte (0x5a5) = 0x01 → 'footer'
+        # Body zone: 1e 74 0b blocks + body text
+        #
+        # We need the DOC magic + layout table stub at the right offsets.
+        # _LAYOUT_SECTION_START = 0x5a0; byte at +5 = 0x01 (footer).
+        LAYOUT_SECTION_START = 0x5a0
+        # Build a minimal file: magic + zero-fill up to layout section + footer
+        # section byte + zero-fill to pre-body zone.
+        prebody_start = LAYOUT_SECTION_START + 10  # after layout section stub
+
+        # Layout section stub: anchor byte in 0x60-0x9f range at +0, 0x00 at +1,
+        # then 4 bytes of filler, with byte +5 = 0x01 (footer).
+        # _section_type_at scans for [0x60-0x9f] 0x00 and reads marker at +5.
+        layout_stub = b'\x60\x00\x00\x00\x00\x01'
+
+        # Pre-body: 22 6d 0b block (8 bytes) + footer text + 00 00 terminator
+        prebody_block = bytes([0x22, 0x6d, 0x0b, 0xfa, 0x0b, 0x00, 0x00, 0x00])
+        footer_text = b'Footer\x02text\x13\x04\x50'
+        prebody_terminator = b'\x00\x00'
+
+        # Body: 3× 1e 74 0b anchors (to win _detect_variant) + body text
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        body_text = b'Body\x02content\x13\x04\x50'
+
+        data = (b'DOC'
+                + b'\x00' * (LAYOUT_SECTION_START - 3)  # pad to layout section
+                + layout_stub
+                + b'\x00' * (prebody_start - LAYOUT_SECTION_START - len(layout_stub))
+                + prebody_block + footer_text + prebody_terminator
+                + body_anchor * 3 + body_text)
+
+        doc = parse(data)
+        self.assertIsNotNone(doc.footer)
+        self.assertIn('Footer', doc.footer.plain_text())
+        self.assertIn('text', doc.footer.plain_text())
+        # Footer text must NOT appear as a body paragraph
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        self.assertNotIn('Footer text', body_texts)
+        self.assertIn('Body content', body_texts)
+
+    def test_1e_body_not_split_by_high_b3_heuristic(self):
+        """Early 1e 74 0b blocks with B3 >= 0x80 must not cause body_start to
+        be pushed forward (the B3 heuristic used for 22 XX files does not apply
+        to 1e files where all blocks are body content)."""
+        # Two blocks with B3 >= 0x80 followed by a block with text.
+        # Without the fix, body_start would land on the third block and the
+        # text from the first two would be routed to the footer.
+        anchor_high = bytes([0x1e, 0x74, 0x0b, 0xcc, 0x10, 0x00, 0x00, 0x00])  # B3=0xcc
+        anchor_high2 = bytes([0x1e, 0x74, 0x0b, 0xfe, 0x0a, 0x00, 0x00, 0x00]) # B3=0xfe
+        anchor_low  = bytes([0x1e, 0x74, 0x0b, 0x08, 0x0e, 0x00, 0x00, 0x00])  # B3=0x08
+        data = (MAGIC
+                + anchor_high * 3          # enough for _detect_variant
+                + b'\x0f\x02' + anchor_high  # 0f 02 separator + high-B3 block
+                + b'First\x13\x04\x50'
+                + b'\x0f\x02' + anchor_high2
+                + b'Second\x13\x04\x50'
+                + b'\x0f\x02' + anchor_low
+                + b'Third\x13\x04\x50')
+
+        doc = parse(data)
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        self.assertIn('First', body_texts)
+        self.assertIn('Second', body_texts)
+        self.assertIn('Third', body_texts)
+        self.assertIsNone(doc.footer)
+
+    def test_22_prebody_ctrl_self_referential_suppressed_in_1e_body(self):
+        """In 1e 74 files, binary blobs in the body embed the pre-body zone's
+        22 XX XX self-referential sequence (e.g. 22 6d 6d).  These bytes are
+        printable and would otherwise leak as '"mmxd'-style artefacts.
+        The parser must skip to the next 1e 74 0b block instead of emitting them."""
+        # Construct a 1e 74 file whose pre-body zone uses 22 6d 0b.
+        # pre-body: 22 6d 0b header blocks (enough for _detect_variant to pick 22 6d)
+        prebody_block = bytes([0x22, 0x6d, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        # body: 1e 74 0b blocks (detected as most frequent pair)
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        # Embed a binary blob that contains 22 6d 6d followed by printable junk,
+        # then a real paragraph.
+        blob_with_selfreference = bytes([
+            0x22, 0x6d, 0x6d,   # 22 prebody_ctrl prebody_ctrl — the leaked self-referential
+            0x14, 0x18,         # non-printable bytes (consumed by normal flow)
+            0x78,               # 'x' — printable, should NOT appear in output
+            0x64,               # 'd' — printable, should NOT appear in output
+        ])
+        data = (MAGIC
+                + prebody_block * 3     # 3× 22 6d 0b so _detect_variant sees them in prebody
+                + body_anchor * 3       # 3× 1e 74 0b so _detect_variant picks 1e 74 as body
+                + blob_with_selfreference
+                + body_anchor           # next para_ctrl — skip lands here
+                + b'RealText' + bytes([0x13, 0x04, 0x50]))
+
+        doc = parse(data)
+        body_texts = [p.plain_text() for p in doc.paragraphs]
+        combined = ' '.join(body_texts)
+        self.assertIn('RealText', combined)
+        # Printable bytes from the binary blob must not appear
+        self.assertNotIn('"mm', combined)
+        self.assertNotIn('xd', combined)
+
+    def test_page_break_b8_07_skips_binary_blob(self):
+        """1e 74 0b cc 10 14 90 00 07 03 ... is a page-break form where font-size
+        bytes (B5=0x14) precede the 07 03 marker at B8/B9.  The entire blob between
+        this block and the next para_ctrl must be skipped — no printable bytes emitted."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        page_break_block = bytes([0x1e, 0x74, 0x0b, 0xcc, 0x10, 0x14, 0x90, 0x00, 0x07, 0x03])
+        blob = bytes([0x40, 0x30, 0x48, 0x27, 0x78, 0x78, 0x23, 0x24])  # printable junk
+        data = (MAGIC
+                + body_anchor * 3
+                + page_break_block + blob
+                + body_anchor
+                + b'Good' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('Good', combined)
+        self.assertNotIn('@', combined)
+        self.assertNotIn("H'", combined)
+        self.assertNotIn('#$', combined)
+
+    def test_page_break_b6_b7_07_03_skips_binary_blob(self):
+        """1e 74 0b B3 10 02 07 03 ... is a page-break form where 07 03 appears at
+        B6/B7.  The blob between this block and the next para_ctrl must be skipped."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        page_break_block = bytes([0x1e, 0x74, 0x0b, 0xae, 0x10, 0x02, 0x07, 0x03, 0x00])
+        blob = bytes([0x60, 0x81, 0x48, 0x27, 0x78, 0x78, 0x23, 0x24])  # printable junk
+        data = (MAGIC
+                + body_anchor * 3
+                + page_break_block + blob
+                + body_anchor
+                + b'Good' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('Good', combined)
+        self.assertNotIn('`', combined)
+        self.assertNotIn('#$', combined)
+
+    def test_07_03_in_1e_body_discards_metadata_text(self):
+        """In 1e-prefix files, 07 03 at the end of a per-page control text block
+        (e.g. 'Last page Header / Footer disabled') should discard the accumulated
+        metadata text and jump to the next para_ctrl."""
+        body_anchor = bytes([0x1e, 0x74, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        indent = bytes([0x01, 0x22, 0x22])  # trailing indent consumed by skip
+        metadata = b'Metadata text'
+        page_break = bytes([0x07, 0x03])
+        blob = bytes([0x40, 0x30, 0x48, 0x60])  # printable junk after 07 03
+        data = (MAGIC
+                + body_anchor * 3
+                + body_anchor + indent + metadata + page_break + blob
+                + body_anchor
+                + b'RealContent' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('RealContent', combined)
+        self.assertNotIn('Metadata', combined)
+        self.assertNotIn('@', combined)
 
 
 if __name__ == '__main__':

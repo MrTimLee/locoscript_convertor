@@ -97,23 +97,34 @@ class Document:
         return '\n\n'.join(p.plain_text() for p in self.paragraphs if p.plain_text().strip())
 
 
-def _detect_ctrl_byte(data: bytes) -> int:
-    """Return the control-sequence discriminator byte for this file.
+def _detect_variant(data: bytes) -> tuple[int, int]:
+    """Return ``(prefix_byte, ctrl_byte)`` for this file.
 
-    Counts all ``22 XX 0b`` occurrences and returns the most frequent ``XX``.
-    Standard Locoscript 2 DOC files use ``0x61`` (``"a``); some files
-    (e.g. ``BUILDNGS.A-C``, ``MARKETPL.*``) use ``0x6d`` (``"m``); a third
-    variant (e.g. ``Memorial.002``) uses ``0x42`` (``"B``) in the body while
-    the header/transition zone contains a handful of ``22 61 0b`` blocks.
-    Using the most-frequent value handles all three cases correctly.
-    Returns ``0x61`` if no matching sequence is found.
+    Scans for ``PP XX 0b`` sequences where PP is a known prefix byte
+    (``0x22`` for standard files, ``0x1e`` for the rarer RS-prefix variant)
+    and counts ``(PP, XX)`` pairs.  The most-frequent pair wins.
+
+    Known variants:
+
+    * ``(0x22, 0x61)`` — standard ``DOC`` files (``"a``)
+    * ``(0x22, 0x6d)`` — second variant (``"m``, e.g. ``BUILDNGS.A-C``)
+    * ``(0x22, 0x42)`` — third variant (``"B``, e.g. ``Memorial.002``)
+    * ``(0x1e, 0x74)`` — fourth variant (RS prefix, e.g. ``BINDINDX.HEX``)
+
+    Using the most-frequent pair handles files like ``Memorial.002`` where
+    the header zone contains a handful of ``22 61 0b`` blocks before the
+    ``22 42 0b`` body content begins.  Returns ``(0x22, 0x61)`` if no
+    matching sequence is found.
     """
     from collections import Counter
     counts: Counter = Counter()
     for i in range(len(data) - 2):
-        if data[i] == 0x22 and data[i + 2] == 0x0b:
-            counts[data[i + 1]] += 1
-    return counts.most_common(1)[0][0] if counts else 0x61
+        if data[i] in (0x22, 0x1e) and data[i + 2] == 0x0b:
+            counts[(data[i], data[i + 1])] += 1
+    if not counts:
+        return (0x22, 0x61)
+    (pb, cb), _ = counts.most_common(1)[0]
+    return (pb, cb)
 
 
 # Layout table: 10 × 73-byte entries starting at 0x2C6.
@@ -153,18 +164,19 @@ def _section_type_at(data: bytes, pos: int, window: int = 80) -> str:
     return 'body'
 
 
-def _find_content_start(data: bytes, ctrl_byte: int = 0x61) -> int:
+def _find_content_start(data: bytes, ctrl_byte: int = 0x61,
+                        prefix_byte: int = 0x22) -> int:
     """
     Find the byte offset where document content begins.
 
-    The first ``22 XX 0b`` is always in the header/transition zone.  If a
-    ``22 XX 0b c4 0e`` structural section-header block appears within 300 bytes
+    The first ``PP XX 0b`` is always in the header/transition zone.  If a
+    ``PP XX 0b c4 0e`` structural section-header block appears within 300 bytes
     of the current position we are still inside the header — jump past the
-    following section break (``0e 01`` / ``0e 02``) to the next ``22 XX 0b``.
+    following section break (``0e 01`` / ``0e 02``) to the next ``PP XX 0b``.
     Repeat up to 5 times to handle documents with multiple header cycles.
     """
-    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
-    c40e_block = bytes([0x22, ctrl_byte, 0x0b, 0xc4, 0x0e])
+    para_ctrl = bytes([prefix_byte, ctrl_byte, 0x0b])
+    c40e_block = bytes([prefix_byte, ctrl_byte, 0x0b, 0xc4, 0x0e])
 
     try:
         pos = data.index(para_ctrl)
@@ -190,7 +202,8 @@ def _find_content_start(data: bytes, ctrl_byte: int = 0x61) -> int:
     return pos
 
 
-def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_section: str) -> int:
+def _find_body_start(data: bytes, ctrl_byte: int, first_para: int,
+                     initial_section: str, prefix_byte: int = 0x22) -> int:
     """Return the byte offset where body content begins.
 
     For body-only documents (``initial_section == 'body'``) this is
@@ -211,10 +224,10 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_secti
     if initial_section == 'body':
         return first_para
 
-    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    para_ctrl = bytes([prefix_byte, ctrl_byte, 0x0b])
     n = len(data)
 
-    candidate = _find_content_start(data, ctrl_byte)
+    candidate = _find_content_start(data, ctrl_byte, prefix_byte)
     if candidate != first_para:
         return candidate
 
@@ -253,7 +266,8 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int, initial_secti
     return first_para
 
 
-def _find_footer_start(data: bytes, ctrl_byte: int, first_para: int, body_start: int) -> int:
+def _find_footer_start(data: bytes, ctrl_byte: int, first_para: int,
+                       body_start: int, prefix_byte: int = 0x22) -> int:
     """Return the byte offset of the first footer paragraph content block.
 
     Only meaningful when ``initial_section == 'header'`` (header + footer
@@ -261,7 +275,7 @@ def _find_footer_start(data: bytes, ctrl_byte: int, first_para: int, body_start:
     (``0e 01`` / ``0e 02``); the first ``22 XX 0b`` after that break (and
     before ``body_start``) is ``footer_start``.  Returns ``0`` if not found.
     """
-    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    para_ctrl = bytes([prefix_byte, ctrl_byte, 0x0b])
     n = len(data)
 
     for j in range(first_para, min(body_start, n - 1)):
@@ -273,16 +287,18 @@ def _find_footer_start(data: bytes, ctrl_byte: int, first_para: int, body_start:
     return 0
 
 
-def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
+def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
+                        prefix_byte: int = 0x22) -> int:
     """
-    Skip a ``22 XX`` control sequence and return the new offset.
+    Skip a ``PP XX`` control sequence and return the new offset.
 
     Type 0x0b (paragraph content) has a fixed 8-byte structure:
-        22 XX 0b | 3 param bytes | 2 indent bytes
+        PP XX 0b | 3 param bytes | 2 indent bytes
     All other types: skip prefix + type + 1 byte, then skip any trailing
     non-printable bytes and doubled-pair indent markers.
     """
-    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    para_ctrl = bytes([prefix_byte, ctrl_byte, 0x0b])
+    min_dp = 0x20 if prefix_byte == 0x22 else 0x00
     n = len(data)
     ctrl_type = data[i+2] if i+2 < n else 0x00
 
@@ -325,16 +341,22 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # trailing bytes (separator bytes, column widths, etc.) containing
             # printable values that must not be emitted as text.  Scan forward past
             # the trailing bytes to the next alignment marker (0x11 DC1) or control
-            # prefix (22 XX).  Standard 22 61 files never use this trailing structure
+            # prefix (PP XX).  Standard 22 61 files never use this trailing structure
             # — their 78 00 blocks use the default 8-byte skip.
             i += 8
             while i + 1 < n:
-                if data[i] == 0x11 or (data[i] == 0x22 and data[i + 1] == ctrl_byte):
+                if data[i] == 0x11 or (data[i] == prefix_byte and data[i + 1] == ctrl_byte):
                     break
                 i += 1
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
             i += 11
+        elif (prefix_byte != 0x22 and i + 6 < n
+              and data[i+5] == 0x11 and data[i+6] == 0x06):
+            # Centre-alignment marker at B5/B6 of block header in 1e-prefix variant
+            # files.  Skip 5 bytes (the block header up to B4) and leave 11 06 for
+            # the main loop to apply the alignment to the current paragraph.
+            i += 5
         elif i + 7 < n and data[i+7] == 0x0f:
             # B7 is an 0f SI byte — part of an 0f XX sequence (tab, hanging indent,
             # or Contents Page paragraph separator).  Skip 7 bytes and leave the
@@ -344,7 +366,7 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             # 13 04 formatting sequence falls at offset 7-8 (one later than case 1);
             # skip 7 bytes and let the main loop handle the 13 04 xx sequence.
             i += 7
-        elif i + 8 < n and data[i+7] == 0x22 and data[i+8] == ctrl_byte:
+        elif i + 8 < n and data[i+7] == prefix_byte and data[i+8] == ctrl_byte:
             # Another control prefix starts at the indent-byte position;
             # skip 7 bytes and let the main loop handle that control sequence.
             i += 7
@@ -381,14 +403,20 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61) -> int:
             while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
                 i += 1
             # Skip doubled-pair indent markers (e.g. 0x54 0x54, 0x3d 0x3d)
-            while i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
+            while i+1 < n and data[i] == data[i+1] and data[i] >= min_dp:
                 i += 2
 
     return i
 
 
-def parse(data: bytes) -> Document:
-    """Parse raw Locoscript 2 file bytes into a Document."""
+def parse(data: bytes, _prebody_end: int = 0) -> Document:
+    """Parse raw Locoscript 2 file bytes into a Document.
+
+    ``_prebody_end`` is a private parameter used when parsing the pre-body
+    zone of a ``1e``-prefix file.  When > 0 it overrides ``body_start`` to
+    ``_prebody_end`` so that every block in the slice is routed as
+    header/footer content (there is no body in the pre-body zone).
+    """
     if data[:3] == b'JOY':
         raise ParseError(
             "JOY format files are not currently supported. "
@@ -398,15 +426,19 @@ def parse(data: bytes) -> Document:
     if data[:3] != MAGIC:
         raise ParseError("Not a valid Locoscript 2 file (missing DOC header)")
 
-    ctrl_byte = _detect_ctrl_byte(data)
-    ctrl_prefix = bytes([0x22, ctrl_byte])
-    para_ctrl = bytes([0x22, ctrl_byte, 0x0b])
+    prefix_byte, ctrl_byte = _detect_variant(data)
+    ctrl_prefix = bytes([prefix_byte, ctrl_byte])
+    para_ctrl = bytes([prefix_byte, ctrl_byte, 0x0b])
 
     # Scale pitch from layout table entry 0 (offset +11).
     # twips_per_unit = scale_pitch_byte × 6 (e.g. 0x18 × 6 = 144 twips = 0.1").
     _scale_pitch = (data[_LAYOUT_TABLE_START + 11]
                     if len(data) > _LAYOUT_TABLE_START + 11 else 0x18)
     _twips_per_unit = _scale_pitch * 6
+
+    # Doubled-pair threshold: 0x22 files use printable bytes (>= 0x20) as indent
+    # markers; 0x1e files use smaller column values (>= 0x00).
+    min_dp = 0x20 if prefix_byte == 0x22 else 0x00
 
     doc = Document()
     n = len(data)
@@ -424,9 +456,37 @@ def parse(data: bytes) -> Document:
     except ValueError:
         first_para = 3
 
-    body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section)
-    footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start)
-                    if initial_section == 'header' else 0)
+    prebody_ctrl_byte = 0  # ctrl byte of the pre-body 22 XX zone in 1e-prefix files
+    if _prebody_end > 0:
+        # Pre-body zone parse: no body exists in this slice — every block is
+        # header/footer content.  Setting body_start = _prebody_end (== n)
+        # ensures i >= body_start is never true, so the initial_section
+        # routing applies throughout.
+        body_start = _prebody_end
+        footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
+                        if initial_section == 'header' else 0)
+    elif prefix_byte != 0x22:
+        # 1e-prefix files: every 1e XX 0b block is body content.  The pre-body
+        # zone (header/footer sections) uses a separate 22 XX 0b variant and
+        # lives before first_para — parse it with a recursive call so that
+        # body_start there is forced to len(prebody_data) and all content is
+        # correctly routed as header/footer.
+        body_start = first_para
+        prebody_data = data[:first_para]
+        prebody_prefix, prebody_ctrl_byte = _detect_variant(prebody_data)
+        if prebody_prefix == 0x22:
+            prebody_doc = parse(prebody_data, _prebody_end=len(prebody_data))
+            if prebody_doc.header is not None:
+                doc.header = prebody_doc.header
+            if prebody_doc.footer is not None:
+                doc.footer = prebody_doc.footer
+        initial_section = 'body'
+        current_section = 'body'
+        footer_start = 0
+    else:
+        body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section, prefix_byte)
+        footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
+                        if initial_section == 'header' else 0)
 
     i = first_para
 
@@ -502,8 +562,8 @@ def parse(data: bytes) -> Document:
             flush_run()
             flush_para()
             i += 3
-            # Skip trailing indent metadata: 00 01 + doubled printable pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
+            # Skip trailing indent metadata: 00 01 + doubled pair
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
                 i += 4
             continue
 
@@ -512,8 +572,8 @@ def parse(data: bytes) -> Document:
             flush_run()
             italic = True
             i += 3
-            # Skip trailing indent metadata: 00 01 + doubled printable pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
+            # Skip trailing indent metadata: 00 01 + doubled pair
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
                 i += 4
             continue
 
@@ -525,8 +585,8 @@ def parse(data: bytes) -> Document:
             else:
                 current_text.append('\n')
             i += 3
-            # Skip trailing indent metadata: 00 01 + doubled printable pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
+            # Skip trailing indent metadata: 00 01 + doubled pair
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
                 i += 4
             continue
 
@@ -559,22 +619,23 @@ def parse(data: bytes) -> Document:
         #            → content
         # Without this handler the printable param bytes (e.g. '1a', 'Rf') and any
         # following doubled pairs (e.g. '**', '>>') leak into the output as artefacts.
-        # 0f 02 22 ctrl 0b — paragraph separator used in Contents Page sections
-        # of 22 6d variant files.  Only active for non-standard ctrl_byte (not
-        # 0x61) where this pattern is confirmed as a paragraph boundary.
+        # 0f 02 PP ctrl 0b — paragraph separator used in Contents Page sections
+        # of non-standard variant files (22 6d, 1e 74, etc.).  Only active for
+        # non-standard ctrl_byte (not 0x61) where this pattern is confirmed as
+        # a paragraph boundary.
         if (ctrl_byte != 0x61
                 and data[i] == 0x0f and i+1 < n and data[i+1] == 0x02
-                and i+3 < n and data[i+2] == 0x22 and data[i+3] == ctrl_byte):
+                and i+3 < n and data[i+2] == prefix_byte and data[i+3] == ctrl_byte):
             flush_run()
             flush_para()
             i += 2
             continue
 
-        # 0f 01 22 ctrl 0b — line break within a paragraph in 22 6d variant
-        # files.  Only active for non-standard ctrl_byte (not 0x61).
+        # 0f 01 PP ctrl 0b — line break within a paragraph in non-standard
+        # variant files.  Only active for non-standard ctrl_byte (not 0x61).
         if (ctrl_byte != 0x61
                 and data[i] == 0x0f and i+1 < n and data[i+1] == 0x01
-                and i+3 < n and data[i+2] == 0x22 and data[i+3] == ctrl_byte):
+                and i+3 < n and data[i+2] == prefix_byte and data[i+3] == ctrl_byte):
             flush_run()
             current_text.append('\n')
             i += 2
@@ -635,18 +696,61 @@ def parse(data: bytes) -> Document:
             while i < n and data[i] < 0x20 and data[i] not in (WORD_SEP, 0x06, 0x13):
                 i += 1
             # Skip optional doubled-pair indent marker
-            if i+1 < n and data[i] == data[i+1] and data[i] >= 0x20:
+            if i+1 < n and data[i] == data[i+1] and data[i] >= min_dp:
                 i += 2
             continue
 
-        # --- Control sequence: 22 XX ---
+        # --- Doubled prefix byte: PP PP ... (1e-prefix variant self-referential) ---
+        # In 1e 74 files the self-referential metadata sequence is 1e 1e 74 01 …
+        # rather than 1e 74 74.  The first 1e does not form a valid ctrl_prefix
+        # (1e 1e ≠ 1e 74), so it falls through — but then 1e 74 01 is processed
+        # as a non-0b control sequence that leaves a printable artefact byte.
+        # Detect two consecutive prefix bytes and skip the whole block directly.
+        if (prefix_byte != 0x22
+                and data[i] == prefix_byte and i+1 < n and data[i+1] == prefix_byte):
+            next_block = data.find(para_ctrl, i + 2)
+            i = next_block if next_block >= 0 else n
+            continue
+
+        # --- Secondary self-referential: 22 prebody_ctrl prebody_ctrl in 1e-prefix body ---
+        # Binary page-layout blobs embedded in 1e-prefix body paragraphs contain the
+        # 22 XX XX self-referential sequence from the pre-body zone's 22 XX variant
+        # (e.g. 22 6d 6d in BINDINDX.HEX, where 0x22='"', 0x6d='m' are printable and
+        # leak as '"mmxd' artefacts).  These sequences are never body text — skip to the
+        # next para_ctrl, identical to the 22 XX XX handler for 22-prefix files.
+        if (prefix_byte != 0x22
+                and prebody_ctrl_byte != 0
+                and i + 2 < n
+                and data[i] == 0x22
+                and data[i+1] == prebody_ctrl_byte
+                and data[i+2] == prebody_ctrl_byte):
+            next_block = data.find(para_ctrl, i + 3)
+            i = next_block if next_block >= 0 else n
+            continue
+
+        # --- 07 03 in 1e-prefix body = per-page control block page-break ---
+        # Some 1e-prefix blocks store per-page LocoScript settings (e.g. "Last page
+        # Header / Footer disabled") and end with 07 03 (BEL + ETX) as a page-break
+        # marker, followed by a binary layout blob.  The text before 07 03 is internal
+        # metadata, not body content.  Discard accumulated text and jump to next para_ctrl.
+        # Restricted to 1e-prefix files: in 22-prefix files 07 03 can legitimately follow
+        # body content (e.g. BUILDNGS.H "...Haugh Lane?\x07\x03") and must not be discarded.
+        if (prefix_byte != 0x22
+                and data[i] == 0x07 and i + 1 < n and data[i + 1] == 0x03):
+            current_text.clear()
+            next_para = data.find(para_ctrl, i + 2)
+            i = next_para if next_para >= 0 else n
+            continue
+
+        # --- Control sequence: PP XX ---
         if data[i:i+2] == ctrl_prefix:
             ctrl_type = data[i+2] if i+2 < n else 0
             if ctrl_type in (WORD_SEP, 0x06):
-                # 22 XX followed immediately by a word separator is literal text
-                # (e.g. the opening quote in '"a typical..."'), not a control code
-                current_text.append('"')
-                current_text.append(chr(ctrl_byte))
+                # PP XX followed immediately by a word separator is literal text
+                # only for 0x22 prefix files (where PP = '"' is printable).
+                if prefix_byte == 0x22:
+                    current_text.append('"')
+                    current_text.append(chr(ctrl_byte))
                 i += 2
             else:
                 if ctrl_type == 0x0b:
@@ -669,6 +773,18 @@ def parse(data: bytes) -> Document:
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
+                        # Alternative page break forms in 1e-prefix files where font-size
+                        # bytes or an extra param byte shift the 07 03 marker forward:
+                        #   "1e 74 0b cc 10 14 90 00 07 03 ..." — 07 03 at B8/B9
+                        #   "1e 74 0b ae 10 02 07 03 00 ..."   — 07 03 at B6/B7
+                        if i + 8 < n and data[i + 5] == 0x14 and data[i + 8] == 0x07:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
+                        if i + 7 < n and data[i + 6] == 0x07 and data[i + 7] == 0x03:
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
                     elif footer_start > 0 and i >= footer_start:
                         current_section = 'footer'
                     elif initial_section != 'body':
@@ -681,12 +797,12 @@ def parse(data: bytes) -> Document:
                         next_ctrl = data.find(para_ctrl, i + 3)
                         i = next_ctrl if next_ctrl >= 0 else n
                         continue
-                i = _skip_ctrl_sequence(data, i, ctrl_byte)
-                # Skip trailing indent metadata: 00 01 + doubled printable pair
-                if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= 0x20:
+                i = _skip_ctrl_sequence(data, i, ctrl_byte, prefix_byte)
+                # Skip trailing indent metadata: 00 01 + doubled pair
+                if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
                     i += 4
                 # Fallback: 01 XX XX (3-byte) trailing indent (e.g. HENCOTES first body para)
-                elif i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= 0x20:
+                elif i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= min_dp:
                     i += 3
             continue
 
