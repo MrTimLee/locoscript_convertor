@@ -527,7 +527,9 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         nonlocal current_para
         flush_run()
         if not any(r.text.strip() for r in current_para.runs):
+            was_page_break = current_para.page_break_before
             current_para = Paragraph()
+            current_para.page_break_before = was_page_break
             return
         if current_section == 'header':
             doc.header = current_para
@@ -580,7 +582,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             flush_para()
             i += 3
             # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
                 i += 4
             continue
 
@@ -590,7 +592,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             italic = True
             i += 3
             # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
                 i += 4
             continue
 
@@ -603,7 +605,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 current_text.append('\n')
             i += 3
             # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] >= min_dp:
+            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
                 i += 4
             continue
 
@@ -767,6 +769,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         if (prefix_byte != 0x22
                 and data[i] == 0x07 and i + 1 < n and data[i + 1] == 0x03):
             current_text.clear()
+            flush_para()
+            current_para.page_break_before = True
             next_para = data.find(para_ctrl, i + 2)
             i = next_para if next_para >= 0 else n
             continue
@@ -845,7 +849,15 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         # block follows (seen in MEMORIAL-style documents as
                         # "22 XX 0b B3 B4 07 03 ...").  Jump to the next paragraph
                         # content block, skipping the binary metadata.
-                        if i + 5 < n and data[i + 5] == 0x07:
+                        # Guard: exclude structural section headers in 22-prefix files
+                        # (B3 >= 0x80, B4 = 0x0e), which legitimately carry 07 03 as
+                        # binary layout data — they are handled by _skip_ctrl_sequence.
+                        _is_structural_hdr = (prefix_byte == 0x22 and i + 4 < n
+                                              and data[i + 3] >= 0x80 and data[i + 4] == 0x0e)
+                        if i + 5 < n and data[i + 5] == 0x07 and not _is_structural_hdr:
+                            flush_run()
+                            flush_para()
+                            current_para.page_break_before = True
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
@@ -854,10 +866,16 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         #   "1e 74 0b cc 10 14 90 00 07 03 ..." — 07 03 at B8/B9
                         #   "1e 74 0b ae 10 02 07 03 00 ..."   — 07 03 at B6/B7
                         if i + 8 < n and data[i + 5] == 0x14 and data[i + 8] == 0x07:
+                            flush_run()
+                            flush_para()
+                            current_para.page_break_before = True
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
                         if i + 7 < n and data[i + 6] == 0x07 and data[i + 7] == 0x03:
+                            flush_run()
+                            flush_para()
+                            current_para.page_break_before = True
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
@@ -869,6 +887,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                                 and data[i + 6] in (0x01, 0x02)):
                             flush_run()
                             flush_para()
+                            current_para.page_break_before = True
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue

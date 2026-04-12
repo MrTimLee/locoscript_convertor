@@ -297,7 +297,7 @@ When `PP XX` is followed by a word separator (`02`) or `06`, the sequence is tre
 
 The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (double-quote). Key behavioural differences from `0x22` variants:
 
-- **Doubled-pair threshold:** all indent values in `1e 74` files fall in `0x00–0x1f`, so the `>= 0x20` threshold is dropped to `>= 0x00` for these files.
+- **Doubled-pair threshold:** all indent values in `1e 74` files fall in `0x00–0x1f`, so the universal `> 0` threshold (see Trailing Indent Metadata Pattern) applies.
 - **Self-referential sequence:** `1e 1e 74 01 00 00 00 23` (analogous to `22 61 61`) — always binary layout metadata, never body text. The parser skips directly to the next `1e 74 0b` block.
 - **`22 6d 6d` embedded in body blobs:** the pre-body zone's `22 6d` self-referential sequence (`22 6d 6d`) can appear inside `1e 74` body binary blobs. Detected using `prebody_ctrl_byte` (the ctrl byte discovered by running `_detect_variant` on the pre-body slice); when seen, the parser skips to the next `1e 74 0b` block, preventing `"mmxd`-style text artefacts.
 - **`0f 00 1e 74 0b` (section boundary):** always preceded by the self-referential sequence. After the sequence skip lands on `1e 74 0b`, this is treated silently (no paragraph flush).
@@ -305,8 +305,10 @@ The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (doubl
   - `1e 74 0b B3 B4 07 03 …` — `07 03` at B5/B6 (standard MEMORIAL-style, already handled)
   - `1e 74 0b cc 10 14 90 00 07 03 …` — B5=`0x14` (font-size bytes) shifts marker to B8/B9
   - `1e 74 0b ae 10 02 07 03 00 …` — extra param byte shifts marker to B6/B7
-  In all cases the entire block (up to the next `1e 74 0b`) is skipped.
-- **Per-page LocoScript control labels:** some `1e 74` body blocks accumulate text such as `"Last page Header / Footer disabled?"` before encountering a `07 03` page-break marker. These are per-page LocoScript UI metadata labels, not document content. When `07 03` is seen in the main parse loop (for `1e`-prefix files), any accumulated text is discarded and the parser jumps to the next `1e 74 0b`.
+  In all cases the parser calls `flush_run(); flush_para(); current_para.page_break_before = True` before jumping to the next `1e 74 0b`. The `B5=0x07` check is guarded in `22`-prefix files: blocks with B3 ≥ `0x80` and B4 = `0x0e` are structural section headers that legitimately carry `07 03` as binary layout data — these are handled by `_skip_ctrl_sequence` and must not trigger a page break.
+  
+  **`flush_para` propagation:** when `flush_para()` discards an empty paragraph (no content runs), it propagates `page_break_before` to the replacement paragraph. This ensures the flag survives intermediate `0f 02` section-separator flushes (which may occur between a `07 03` block and the first content paragraph — e.g. the "Contents" heading in BINDINDX.HEX).
+- **Per-page LocoScript control labels:** some `1e 74` body blocks accumulate text such as `"Last page Header / Footer disabled?"` before encountering a `07 03` page-break marker. These are per-page LocoScript UI metadata labels, not document content. When `07 03` is seen in the main parse loop (for `1e`-prefix files), any accumulated text is discarded, `flush_para()` is called, `page_break_before` is set on the next paragraph, and the parser jumps to the next `1e 74 0b`.
 - **Scale pitch:** `0x14` (12cpi) in `BINDINDX.HEX`, giving `twips_per_unit = 120`.
 - **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). The parser sets `para.font_size = B6 / 10.0` on the current paragraph. RTF output adds `\fs{int(font_size×2)}` before run content; DOCX sets `run.font.size = Pt(font_size)`.
 - **B4 sub-entry indent:** B4 ≤ `0x0c` marks a *candidate* sub-entry. The 576-twip (0.4") indent is applied only when **no trailing `01 XX XX` doubled pair follows the block** — the presence of a trailing pair identifies a top-level entry even when B4 ≤ `0x0c`. Genuine indented cross-references (e.g. `see Cockshaw`) have B4 ≤ `0x0c` and no trailing pair; top-level entries (e.g. `Bell, Henry & Sons`) have B4 ≤ `0x0c` but carry a large trailing pair (values `0x19`–`0x2b`). B4 ≥ `0x0d` is always top-level (unindented).
@@ -348,10 +350,12 @@ All other control types (`0c`, `0d`, `36`, etc.) follow a variable-length struct
 After many control sequences a 4-byte metadata suffix appears:
 
 ```
-00 01 XX XX    (where XX == XX and XX >= 0x20)
+00 01 XX XX    (where XX == XX and XX > 0)
 ```
 
-The two identical printable bytes are a doubled-pair indent marker encoding the paragraph's left margin. This suffix is consumed after: `13 04 50` (paragraph break), `13 04 64` (italic on), `13 04 78` (line break/italic off), and after any `22 61` control sequence skip.
+The two identical bytes are a doubled-pair indent marker encoding the paragraph's left margin. This suffix is consumed after: `13 04 50` (paragraph break), `13 04 64` (italic on), `13 04 78` (line break/italic off), and after any `22 61` control sequence skip.
+
+The threshold is `XX > 0` (not `XX >= 0x20`). Values below `0x20` (e.g. `0x0e = 14`) are valid indent amounts in all file variants and must be consumed to prevent the following bytes from being misinterpreted as control codes. The original `>= 0x20` threshold caused `00 01 0e 0e 0e 02` to leave `0e 02` visible to the section-break handler (confirmed in BUILDNGS.H). Using `> 0` also correctly consumes low-value pairs in `1e 74` variant files (e.g. `00 01 06 06`), avoiding spurious content artifacts.
 
 ## Doubled-Pair Indent Markers
 
