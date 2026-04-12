@@ -636,11 +636,13 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             i += 2
             continue
 
-        # 0f 01 PP ctrl 0b — soft return (line break within paragraph) in all variants.
+        # 0f 01 PP ctrl 0b — soft screen line-wrap within a paragraph (all variants).
+        # LocoScript records where text wrapped on its fixed-width screen, but this
+        # carries no semantic meaning in the output — text flows continuously.
+        # Emit nothing; let the output renderer wrap at its own margins.
         if (data[i] == 0x0f and i+1 < n and data[i+1] == 0x01
                 and i+3 < n and data[i+2] == prefix_byte and data[i+3] == ctrl_byte):
             flush_run()
-            current_text.append('\n')
             i += 2
             continue
 

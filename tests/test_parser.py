@@ -32,7 +32,7 @@ PARA_CTRL = bytes([0x22, 0x61, 0x0b])
 
 # 0f 02 + block header (8 bytes) = paragraph break for standard 22 61 files
 PARA_SEP = bytes([0x0f, 0x02]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
-# 0f 01 + block header (8 bytes) = soft line break within paragraph
+# 0f 01 + block header (8 bytes) = soft screen line-wrap (no semantic line break)
 LINE_SEP = bytes([0x0f, 0x01]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
 
 def _doc(body: bytes) -> bytes:
@@ -219,14 +219,13 @@ class TestBoldUnderlineFormatting(unittest.TestCase):
         self.assertIn('Bold', text)
         self.assertNotIn('\x11', text)
 
-    def test_pending_newline_survives_bold_off(self):
-        # A '\n' pending in current_text must not be dropped when bold-off fires
-        # Sequence: content, 0f 01 line-break (emits \n), bold-off, more content
+    def test_soft_line_wrap_then_bold_off_no_newline(self):
+        # 0f 01 is a screen wrap (no \n); bold-off follows; text still flows continuously
         data = _doc(b'Line1' + LINE_SEP + b'\x09\x00Line2')
         text = _plain(data)
         self.assertIn('Line1', text)
         self.assertIn('Line2', text)
-        self.assertIn('\n', text)
+        self.assertNotIn('\n', text)
 
 
 class TestItalic(unittest.TestCase):
@@ -247,11 +246,14 @@ class TestItalic(unittest.TestCase):
         plain_runs = [r for r in runs if not r.italic]
         self.assertTrue(any('plain' in r.text for r in plain_runs))
 
-    def test_line_break_when_not_italic(self):
-        # 0f 01 22 61 0b [...] emits a soft return (newline) within a paragraph
+    def test_soft_line_wrap_continues_paragraph(self):
+        # 0f 01 22 61 0b [...] is a soft screen line-wrap — text flows continuously,
+        # no newline is emitted; the paragraph is NOT split
         data = _doc(b'Line1' + LINE_SEP + b'Line2')
         text = _plain(data)
-        self.assertIn('\n', text)
+        self.assertIn('Line1', text)
+        self.assertIn('Line2', text)
+        self.assertNotIn('\n', text)
 
     def test_08_05_01_turns_italic_on(self):
         # 08 05 01 XX XX (5-byte form) turns italic on
@@ -1269,8 +1271,8 @@ class TestContentsPageControlBlock(unittest.TestCase):
         self.assertIn('first', paras[0])
         self.assertIn('second', paras[1])
 
-    def test_0f_01_creates_line_break(self):
-        """0f 01 22 6d 0b should emit a newline within the current paragraph."""
+    def test_0f_01_does_not_create_line_break(self):
+        """0f 01 22 6d 0b is a soft screen wrap — no newline, same paragraph continues."""
         body = (
             b'first'
             + self._line_break()
@@ -1281,7 +1283,7 @@ class TestContentsPageControlBlock(unittest.TestCase):
         self.assertEqual(len(paras), 1)
         self.assertIn('first', paras[0])
         self.assertIn('second', paras[0])
-        self.assertIn('\n', paras[0])
+        self.assertNotIn('\n', paras[0])
 
     def test_0f_02_does_not_fire_in_22_61_files(self):
         """0f 02 22 61 0b should NOT be treated as a paragraph break in standard files."""
@@ -1390,15 +1392,15 @@ class Test1eVariant(unittest.TestCase):
         self.assertIn('First', paras)
         self.assertIn('Second', paras)
 
-    def test_0f_01_1e_74_0b_line_break(self):
-        """0f 01 1e 74 0b must emit a line break within the current paragraph."""
+    def test_0f_01_1e_74_0b_no_line_break(self):
+        """0f 01 1e 74 0b is a soft screen wrap — no newline emitted, text flows continuously."""
         anchor = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
         sep = bytes([0x0f, 0x01]) + self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
         data = MAGIC + anchor * 3 + b'Line1' + sep + b'Line2\x13\x04\x50'
         result = _plain(data)
         self.assertIn('Line1', result)
         self.assertIn('Line2', result)
-        self.assertIn('\n', result)
+        self.assertNotIn('\n', result)
 
     def test_doubled_pair_below_0x20_consumed(self):
         """In 1e variant files, doubled-pair indent values < 0x20 must be consumed,
