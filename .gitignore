@@ -1,3 +1,6 @@
 venv/
 __pycache__/
 HENCOTES.txt
+
+# Investigation / research documents — kept locally but not tracked in git
+*Investigation*.md

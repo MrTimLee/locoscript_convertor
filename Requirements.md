@@ -161,7 +161,15 @@ Three-byte sequence. If italic is currently active it acts as "italic off" (end 
 Five bytes total. Emits a tab character (`\t`) in the output. The first param byte (`XX`) encodes the **explicit tab column position** in scale pitch units (`XX × twips_per_unit` gives the RTF `\tx` position). A zero value means no explicit position. The second param byte is always the same value (doubled-pair pattern) and is consumed along with the first.
 
 ### Paragraph Indent Marker — `08 05 01` + 2 param bytes
-Five bytes total. Structural paragraph indent/style marker. Emits nothing. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
+Five bytes total. Structural paragraph indent/style marker. Emits nothing. The doubled-pair value XX (where data[i+3] == data[i+4]) encodes one of two things:
+
+| XX range | Meaning | Action |
+|----------|---------|--------|
+| `0x01`–`0x1F` | Left indent in scale pitch units | Set `para.left_indent = XX × twips_per_unit` |
+| `0x20`+ | Bibliography/reference paragraph style code | Consume silently — these are style identifiers, not indent amounts |
+| `0x00` | No indent | Consume silently |
+
+Every XX ≥ `0x20` occurrence across real sample files (HENCOTES, BUILDNGS, BINDINDX.HEX) is followed by a book or reference title, confirming the style-code interpretation. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
 
 ### ENQ Extended Character — `05 base 01 diacritic 01`
 A five-byte sequence encoding an accented or extended character:
@@ -286,7 +294,8 @@ The `0x1e` prefix variant uses RS (ASCII Record Separator) instead of `"` (doubl
   In all cases the entire block (up to the next `1e 74 0b`) is skipped.
 - **Per-page LocoScript control labels:** some `1e 74` body blocks accumulate text such as `"Last page Header / Footer disabled?"` before encountering a `07 03` page-break marker. These are per-page LocoScript UI metadata labels, not document content. When `07 03` is seen in the main parse loop (for `1e`-prefix files), any accumulated text is discarded and the parser jumps to the next `1e 74 0b`.
 - **Scale pitch:** `0x14` (12cpi) in `BINDINDX.HEX`, giving `twips_per_unit = 120`.
-- **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). These bytes are consumed as part of the block skip; no output mapping is currently applied.
+- **B5/B6 font-size encoding:** when B5=`0x14`, B6 encodes the font size in tenths of a point (`0x78` = 12pt, `0x90` = 14.4pt). The parser sets `para.font_size = B6 / 10.0` on the current paragraph. RTF output adds `\fs{int(font_size×2)}` before run content; DOCX sets `run.font.size = Pt(font_size)`.
+- **B4 sub-entry indent:** B4 ≤ `0x0c` marks a *candidate* sub-entry. The 576-twip (0.4") indent is applied only when **no trailing `01 XX XX` doubled pair follows the block** — the presence of a trailing pair identifies a top-level entry even when B4 ≤ `0x0c`. Genuine indented cross-references (e.g. `see Cockshaw`) have B4 ≤ `0x0c` and no trailing pair; top-level entries (e.g. `Bell, Henry & Sons`) have B4 ≤ `0x0c` but carry a large trailing pair (values `0x19`–`0x2b`). B4 ≥ `0x0d` is always top-level (unindented).
 
 ### Control Type `0b` — Paragraph Content Block
 This is the most important control type. It marks the start of a new paragraph's content area and is used as a navigation anchor throughout the parser. The full structure is 8 bytes:
@@ -304,10 +313,11 @@ Several structural variants exist:
 |---|---|---|
 | `B6 B7` = `13 04` | Formatting prefix immediately follows — leave for main loop | Skip 6 bytes |
 | `B6..B8` = `78 00 01` or `78 00 0a`, and `B9 == B10 >= 0x20` | Extended indent variant; followed by a doubled printable pair. `0a` separator confirmed in `22 6d` files. | Skip 11 bytes |
-| `B3 >= 0x80` and `B4` = `0e` | Structural section/layout header block; never contains body text (e.g. `c4 0e` in standard files, `a6 0e` / `88 0e` / `84 0e` in `22 6d` variant files; low-B3 values such as `3a 0e` are normal content blocks) | Skip to next `22 XX 0b` |
+| `B3 >= 0x80` and `B4` = `0e` (**22-prefix files only**) | Structural section/layout header block; never contains body text (e.g. `c4 0e` in standard files, `a6 0e` / `88 0e` / `84 0e` in `22 6d` variant files; low-B3 values such as `3a 0e` are normal content blocks). **Does not apply to `1e` files** — in `1e 74` variant files `B4 = 0x0e` is simply a top-level entry marker (B4 > 0x0c), not a structural indicator. | Skip to next `22 XX 0b` |
 | `B3 < 0x80`, `B6 B7` = `78 00`, no valid doubled pair, and `ctrl_byte ≠ 0x61` | Section-start marker in `22 6d`/`22 42` variant files. Carries variable-length structural trailing bytes (separator bytes, column positions, etc.) containing printable values that must not be emitted. Standard `22 61` files never use this trailing structure. | Skip 8 bytes, then scan forward to next `11` alignment marker or `22 XX` control prefix |
 | `B4 B5 B6` = `0a 09 00` | Tab-indent variant; followed by `01` + doubled printable pair | Skip 11 bytes |
 | `B5` = `0f` and `B6` = `0x04` | SI tab indicator embedded in paragraph header; structure is `B3 B4 0f 04 B1 B2 [01 PP PP]` where B1 = column position and B2 = ctrl_byte (e.g. `88 02 0f 04 3b 61 01 0b 0b` in MEMORIAL.002 column lists) | Skip 9 bytes then consume optional `01` separator + identical-byte indent pair |
+| `B6` = `0f` and `B7` = `0x04` | Column spec shifted one byte later by a B5 sequence number (values `0x31`/`0x32`/`0x33` seen in `BINDINDX.HEX` sub-entries, e.g. `1e 74 0b 8e 0d 31 0f 04 23 74 01 0d 0d`). Structure: `B3 B4 B5 0f 04 B1 B2 [01 PP PP]`. No tab emitted. | Skip 10 bytes then consume optional `01` separator + identical-byte indent pair |
 | `B7 B8` = `13 04` | Formatting prefix one byte later — leave for main loop | Skip 7 bytes |
 | `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
 | (default) | Standard 8-byte block | Skip 8 bytes |
