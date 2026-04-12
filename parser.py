@@ -943,7 +943,12 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             prev_printable = i > 0 and data[i-1] >= 0x20
             prev_sep = i > 0 and data[i-1] in (WORD_SEP, 0x06)
             next_sep = i+1 < n and data[i+1] in (WORD_SEP, 0x06)
-            current_text.append(' ' if (prev_sep or next_sep or not prev_printable) else '-')
+            if prev_sep and next_sep:
+                current_text.append('-')
+            elif prev_sep or next_sep or not prev_printable:
+                current_text.append(' ')
+            else:
+                current_text.append('-')
             i += 1
             continue
 
