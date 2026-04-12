@@ -317,6 +317,7 @@ Several structural variants exist:
 | `B3 < 0x80`, `B6 B7` = `78 00`, no valid doubled pair, and `ctrl_byte ≠ 0x61` | Section-start marker in `22 6d`/`22 42` variant files. Carries variable-length structural trailing bytes (separator bytes, column positions, etc.) containing printable values that must not be emitted. Standard `22 61` files never use this trailing structure. | Skip 8 bytes, then scan forward to next `11` alignment marker or `22 XX` control prefix |
 | `B4 B5 B6` = `0a 09 00` | Tab-indent variant; followed by `01` + doubled printable pair | Skip 11 bytes |
 | `B5` = `0f` and `B6` = `0x04` | SI tab indicator embedded in paragraph header; structure is `B3 B4 0f 04 B1 B2 [01 PP PP]` where B1 = column position and B2 = ctrl_byte (e.g. `88 02 0f 04 3b 61 01 0b 0b` in MEMORIAL.002 column lists) | Skip 9 bytes then consume optional `01` separator + identical-byte indent pair |
+| `B6` = `0f` and `B7` = `0x04` | Column spec shifted one byte later by a B5 sequence number (values `0x31`/`0x32`/`0x33` seen in `BINDINDX.HEX` sub-entries, e.g. `1e 74 0b 8e 0d 31 0f 04 23 74 01 0d 0d`). Structure: `B3 B4 B5 0f 04 B1 B2 [01 PP PP]`. No tab emitted. | Skip 10 bytes then consume optional `01` separator + identical-byte indent pair |
 | `B7 B8` = `13 04` | Formatting prefix one byte later — leave for main loop | Skip 7 bytes |
 | `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
 | (default) | Standard 8-byte block | Skip 8 bytes |
