@@ -262,7 +262,13 @@ Whether the break creates a paragraph boundary depends on what precedes the `0e`
 This distinction only applies within the body (`i >= body_start`). Section breaks in the pre-body zone (between header, footer, and body sections) always flush the paragraph unconditionally.
 
 ### Hyphen / Extra Space — `06`
-Contextual byte. Emits a hyphen (`-`) when it falls between two printable text characters. Emits a space when adjacent to a word separator (`02`), another `06`, or a non-printable preceding byte.
+Contextual byte with three behaviours:
+
+| Context | Output | Example |
+|---------|--------|---------|
+| Both neighbours are `02` word separators (`02 06 02`) | `-` (dash separator) | "Henhouse - domestic hens", "6.3.2015 - 100 Years Ago" |
+| Between two printable chars | `-` (hyphen) | "go-ahead", "vice-chairman", "627-640" |
+| Adjacent to a word separator (one side only), another `06`, or a non-printable preceding byte | ` ` (space) | spacing/layout use |
 
 ## Control Sequence Prefix — `22 61` / `22 6d` / `22 42` / `1e 74`
 

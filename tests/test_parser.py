@@ -419,6 +419,24 @@ class TestHyphenByte(unittest.TestCase):
         text = _plain(data)
         self.assertNotIn('-', text)
 
+    def test_dash_separator_between_word_seps(self):
+        # 02 06 02 → ' - ' (dash separator, not triple space)
+        data = _doc(b'Henhouse\x02\x06\x02domestic')
+        text = _plain(data)
+        self.assertIn('Henhouse - domestic', text)
+
+    def test_word_sep_then_06_then_printable_is_space(self):
+        # 02 06 printable → space before hyphen, not dash separator
+        data = _doc(b'word\x02\x06next')
+        text = _plain(data)
+        self.assertNotIn(' - ', text)
+
+    def test_printable_then_06_then_word_sep_is_space(self):
+        # printable 06 02 → space, not dash separator
+        data = _doc(b'word\x06\x02next')
+        text = _plain(data)
+        self.assertNotIn(' - ', text)
+
 
 class TestLiteralQuotePrefix(unittest.TestCase):
 
