@@ -261,6 +261,14 @@ Whether the break creates a paragraph boundary depends on what precedes the `0e`
 
 This distinction only applies within the body (`i >= body_start`). Section breaks in the pre-body zone (between header, footer, and body sections) always flush the paragraph unconditionally.
 
+When the break is a genuine paragraph boundary (not mid-sentence), the following paragraph has `page_break_before = True`. Converters emit this as:
+
+| Format | Output |
+|--------|--------|
+| TXT | `--- page break ---` separator before the paragraph |
+| RTF | `\page` control word prepended to the paragraph's `\pard` line |
+| DOCX | `WD_BREAK.PAGE` run inserted as the first run of the paragraph |
+
 ### Hyphen / Extra Space — `06`
 Contextual byte with three behaviours:
 

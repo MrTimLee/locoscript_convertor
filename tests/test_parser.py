@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from parser import (parse, ParseError, Document, Paragraph, TextRun,
                     _detect_variant, _find_body_start, _find_footer_start)
-from converter import to_txt
+from converter import to_txt, to_rtf
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +79,11 @@ class TestGoldenFile(unittest.TestCase):
 
     def test_paragraph_count(self):
         """Paragraph count must not silently change."""
-        # Exclude '---' separator lines that to_txt inserts between sections.
+        # Exclude '---' separator lines (header/footer) and '--- page break ---'
+        # markers that to_txt inserts — these are not content paragraphs.
+        _separators = {'---', '--- page break ---'}
         golden_para_count = len([p for p in self.golden.split('\n\n')
-                                  if p.strip() and p.strip() != '---'])
+                                  if p.strip() and p.strip() not in _separators])
         actual_para_count = (
             len([p for p in self.doc.paragraphs if p.plain_text().strip()])
             + (1 if self.doc.header and self.doc.header.plain_text().strip() else 0)
@@ -2096,6 +2098,112 @@ class Test1eB5PageBreakInBlockHeader(unittest.TestCase):
         combined = ' '.join(texts)
         self.assertNotIn('date', combined)
         self.assertNotIn('February', combined)
+
+
+class TestPageBreakPropagation(unittest.TestCase):
+    """0e 01 / 0e 02 non-mid-sentence breaks should set page_break_before on
+    the following paragraph and be emitted correctly in all three formats."""
+
+    def _make_page_break_doc(self, before: bytes, after: bytes, break_type: int = 0x02) -> bytes:
+        """Doc with two paragraphs separated by a page/section break.
+
+        before  — body bytes for the first paragraph (must end with a non-word-sep
+                  so mid_sentence=False fires)
+        after   — body bytes for the second paragraph
+        """
+        layout_block = bytes([0x00] * 10)
+        second_para = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        body = (
+            before
+            + bytes([0x0e, break_type])
+            + layout_block
+            + second_para
+            + after
+            + bytes([0x13, 0x04, 0x50])
+        )
+        return _doc(body)
+
+    # --- Parser ---
+
+    def test_page_break_before_set_on_following_paragraph(self):
+        """Non-mid-sentence 0e 02 should set page_break_before=True on the next para."""
+        data = self._make_page_break_doc(
+            b'first' + bytes([0x13, 0x04, 0x78, 0x00]),  # ends with line-break + 0x00
+            b'second',
+        )
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(len(paras), 2)
+        self.assertFalse(paras[0].page_break_before)
+        self.assertTrue(paras[1].page_break_before)
+
+    def test_no_page_break_before_when_mid_sentence(self):
+        """Mid-sentence 0e 02 (prev = word sep) must not set page_break_before."""
+        data = self._make_page_break_doc(
+            b'care' + bytes([0x02]),   # word separator before 0e → mid_sentence
+            b'home',
+        )
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(len(paras), 1)
+        self.assertFalse(paras[0].page_break_before)
+
+    def test_no_page_break_before_when_no_break(self):
+        """Paragraph with no preceding break must have page_break_before=False."""
+        data = _doc(b'hello' + bytes([0x13, 0x04, 0x50]))
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertFalse(paras[0].page_break_before)
+
+    # --- TXT ---
+
+    def test_txt_emits_page_break_separator(self):
+        """TXT output should include '--- page break ---' before a flagged paragraph."""
+        data = self._make_page_break_doc(
+            b'first' + bytes([0x13, 0x04, 0x78, 0x00]),
+            b'second',
+        )
+        doc = parse(data)
+        txt = to_txt(doc)
+        self.assertIn('--- page break ---', txt)
+        # separator must appear before 'second', not before 'first'
+        self.assertLess(txt.index('--- page break ---'), txt.index('second'))
+        self.assertGreater(txt.index('--- page break ---'), txt.index('first'))
+
+    # --- RTF ---
+
+    def test_rtf_emits_page_control_word(self):
+        r"""RTF output should include \page before the flagged paragraph's \pard."""
+        data = self._make_page_break_doc(
+            b'first' + bytes([0x13, 0x04, 0x78, 0x00]),
+            b'second',
+        )
+        doc = parse(data)
+        rtf = to_rtf(doc)
+        self.assertIn(r'\page\pard', rtf)
+        # \page must precede 'second', not precede 'first'
+        self.assertLess(rtf.index(r'\page\pard'), rtf.index('second'))
+        self.assertGreater(rtf.index(r'\page\pard'), rtf.index('first'))
+
+    # --- DOCX ---
+
+    def test_docx_emits_page_break_run(self):
+        """DOCX output should include a w:lastRenderedPageBreak or w:br PAGE element."""
+        import tempfile, zipfile, os
+        from pathlib import Path
+        data = self._make_page_break_doc(
+            b'first' + bytes([0x13, 0x04, 0x78, 0x00]),
+            b'second',
+        )
+        doc = parse(data)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'out.docx'
+            from converter import save_docx
+            save_docx(doc, dest)
+            with zipfile.ZipFile(dest) as z:
+                xml = z.read('word/document.xml').decode('utf-8')
+        # python-docx emits WD_BREAK.PAGE as <w:br w:type="page"/>
+        self.assertIn('w:type="page"', xml)
 
 
 if __name__ == '__main__':

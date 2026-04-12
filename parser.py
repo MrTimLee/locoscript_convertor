@@ -80,6 +80,7 @@ class Paragraph:
         self.tab_stops: list[int] = []   # explicit tab stop positions in twips
         self.left_indent: int = 0        # left indent in twips (0 = none)
         self.font_size: float | None = None  # point size (None = document default)
+        self.page_break_before: bool = False  # True when a page/section break precedes this paragraph
 
     def plain_text(self) -> str:
         return ''.join(r.text for r in self.runs)
@@ -568,6 +569,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             mid_sentence = i >= body_start and (prev == 0x02 or 0x20 <= prev <= 0x7e)
             if not mid_sentence:
                 flush_para()
+                current_para.page_break_before = True
             next_para = data.find(para_ctrl, i + 2)
             i = next_para if next_para >= 0 else n
             continue
