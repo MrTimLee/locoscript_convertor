@@ -315,9 +315,16 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
             # Indent bytes are 13 04 (a formatting prefix) — leave them for
             # the main loop to handle as italic-on/line-break.
             i += 6
-        elif i + 7 < n and data[i+6] == 0x0f and data[i+7] == 0x04:
-            # Indent bytes are 0f 04 (SI tab) — leave them for the main loop.
-            i += 6
+        elif i + 9 < n and data[i+6] == 0x0f and data[i+7] == 0x04:
+            # B6/B7 = 0f 04: column spec shifted one byte later than the B5/B6 case,
+            # due to an extra B5 sequence byte (e.g. 0x31/0x32/0x33 in BINDINDX.HEX).
+            # Structure: PP XX 0b B3 B4 B5 0f 04 B1 B2 [01 XX XX] → content.
+            # Consume entirely — no tab emitted — mirroring the B5=0x0f/B6=0x04 case.
+            i += 10
+            if i < n and data[i] == 0x01:
+                i += 1
+                if i + 1 < n and data[i] == data[i + 1]:
+                    i += 2
         elif (i + 10 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] in (0x01, 0x0a)
               and data[i+9] == data[i+10] and data[i+9] >= 0x20
               and not (data[i+3] >= 0x80 and data[i+4] == 0x0e)):
@@ -655,13 +662,20 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
 
         if data[i] == 0x0f and i+1 < n and data[i+1] in (0x04, 0x05):
             is_tab = (data[i+1] == 0x04)
+            # In 1e-prefix files, 0f 04 appearing before any paragraph content is a
+            # structural column spec (e.g. "0f 04 23 74 01 XX XX" in BINDINDX.HEX).
+            # Genuine two-column tabs (e.g. "1852\tHexham Township") always have text
+            # in current_text already.  Suppress tab emission and tab-stop recording
+            # for structural occurrences in 1e files; emit normally in 22-prefix files.
+            is_structural = (is_tab and prefix_byte != 0x22
+                             and not ''.join(current_text).strip())
             i += 2
             # Skip leading non-printable param bytes (same rule as variable ctrl handler)
             while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
                 i += 1
             # B1 is the first printable byte: the indent/tab column in scale pitch units.
             # Record it as an explicit tab stop (twips) before consuming both B1 and B2.
-            if is_tab and i < n and 0x20 <= data[i] <= 0x7E:
+            if is_tab and not is_structural and i < n and 0x20 <= data[i] <= 0x7E:
                 current_para.tab_stops.append(data[i] * _twips_per_unit)
             # Skip up to 2 printable tab-stop encoding bytes (B1 and B2)
             for _ in range(2):
@@ -672,7 +686,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 i += 1
                 if i+1 < n and data[i] == data[i+1]:
                     i += 2
-            if is_tab:
+            if is_tab and not is_structural:
                 flush_run()
                 current_text.append('\t')
             continue
@@ -767,6 +781,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 i += 2
             else:
                 _pending_b4_indent = False
+                _pending_large_font = 0.0  # deferred 14.4pt: only for confirmed top-level
                 if ctrl_type == 0x0b:
                     # Position-based section routing: update current_section
                     # based on where this paragraph content block sits in the file.
@@ -775,13 +790,26 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         # Font size and sub-entry indent for 1e-prefix files.
                         # B5=0x14 in the block header signals an explicit font size
                         # encoded in B6 (B6 / 10 = point size):
-                        #   B6=0x78 → 12pt  (small sub-entry font)
-                        #   B6=0x90 → 14.4pt (normal main-entry font)
-                        # B4 ≤ 0x0c additionally marks a sub-entry indent level;
-                        # a fixed 576-twip (0.4") indent is applied if no PARA_INDENT
-                        # (08 05 01 XX XX) has already set left_indent for this para.
+                        #   B6=0x78 → 12pt  (sub-entry / cross-reference font)
+                        #   B6=0x90 → 14.4pt (top-level heading font — deferred)
+                        # Sub-entry indent for 1e-prefix files.
+                        # The sole reliable discriminator between top-level entries
+                        # and indented sub-entries is whether an external trailing
+                        # 01 XX XX doubled pair follows the block:
+                        #   top-level headings:  B5=0x14 B6=0x90/0x78 → after skip,
+                        #                        external 01 XX XX trailing pair → skip
+                        #                        advances i past it → i ≠ i_after_skip
+                        #   sub-entries:         B5=0x01 B6=B7 (pair inside header) →
+                        #                        no external pair → i == i_after_skip
+                        # We set _pending_b4_indent here and apply the 576-twip indent
+                        # below (after _skip_ctrl_sequence) only when i == i_after_skip.
+                        # B4 is NOT used as a threshold — it proved unreliable (e.g.
+                        # "Beaumont Park" has B4=0x0e but is a genuine sub-entry because
+                        # it carries no external trailing pair).
+                        # B6=0x90 (14.4pt) is similarly deferred: it is the heading font
+                        # and must only be applied when the trailing pair confirms top-level.
+                        # B6=0x78 (12pt) and other sizes are applied immediately.
                         if prefix_byte != 0x22 and i + 6 < n:
-                            b4 = data[i + 4]
                             b5 = data[i + 5]
                             b6 = data[i + 6]
                             # Guard: don't apply font/indent from a page-break block
@@ -790,11 +818,19 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                             # would bleed the value into the next paragraph.
                             _is_pagebreak = (i + 8 < n and b5 == 0x14 and data[i + 8] == 0x07)
                             if b5 == 0x14 and not _is_pagebreak:
-                                current_para.font_size = b6 / 10.0
-                            if b4 <= 0x0c and not _is_pagebreak and current_para.left_indent == 0:
-                                # Defer indent: only apply if no trailing 01 XX XX pair follows
-                                # the block (cross-reference sub-entries have no trailing pair;
-                                # top-level entries with large trailing pairs must not be indented).
+                                if b6 == 0x90:
+                                    # Defer: 14.4pt heading font only applies to fresh top-level
+                                    # paragraphs. If left_indent is already set, we're mid-paragraph
+                                    # (e.g. after a mid-sentence 0e 02 page break) — suppress it.
+                                    if current_para.left_indent == 0:
+                                        _pending_large_font = 14.4
+                                elif current_para.left_indent == 0:
+                                    # Only set font size on a fresh paragraph. Mid-paragraph
+                                    # blocks (left_indent already set) are page-break continuations
+                                    # and must not override the paragraph's font.
+                                    current_para.font_size = b6 / 10.0
+                            if not _is_pagebreak and current_para.left_indent == 0:
+                                # Defer: apply only if no external trailing pair (i == i_after_skip)
                                 _pending_b4_indent = True
                         # MEMORIAL-style paragraph break: "22 XX 0b e8 05 ..." in
                         # the body signals a paragraph boundary (these documents use
@@ -823,13 +859,32 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                             next_para = data.find(para_ctrl, i + 3)
                             i = next_para if next_para >= 0 else n
                             continue
+                        # 0e 01 / 0e 02 embedded at B5/B6 of a 1e-prefix block:
+                        #   "1e 74 0b cc 10 0e 02 00 ..." — page-break at end of document.
+                        # The binary layout blob that follows (a LocoScript date template
+                        # etc.) must not be read as body text.
+                        if (i + 6 < n and data[i + 5] == 0x0e
+                                and data[i + 6] in (0x01, 0x02)):
+                            flush_run()
+                            flush_para()
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
                     elif footer_start > 0 and i >= footer_start:
                         current_section = 'footer'
                     elif initial_section != 'body':
                         current_section = initial_section
-                    # B3=0x00 in pre-body zone: layout/transition block containing
-                    # no body text — flush any accumulated text and skip forward.
-                    if i < body_start and i + 3 < n and data[i + 3] == 0x00:
+                    # B3=0x00: layout/transition block, no body text. Always applies
+                    # in the pre-body zone. In the body zone of 1e-prefix files,
+                    # B3=0x00, B4=0x00, B5=0x14 together identify a section-boundary
+                    # metadata block (e.g. "1e 74 0b 00 00 14 78 00" followed by a
+                    # binary layout blob — not body content). The B5=0x14 guard
+                    # prevents legitimate detect anchors (B5=0x00) from being
+                    # skipped in synthetic test data where body_start == first_para.
+                    if i + 5 < n and data[i + 3] == 0x00 and (
+                            i < body_start or
+                            (prefix_byte != 0x22 and data[i + 4] == 0x00
+                             and data[i + 5] == 0x14)):
                         flush_run()
                         flush_para()
                         next_ctrl = data.find(para_ctrl, i + 3)
@@ -843,11 +898,22 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 # Fallback: 01 XX XX (3-byte) trailing indent (e.g. HENCOTES first body para)
                 elif i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= min_dp:
                     i += 3
+                # 13 00 WW WW — 4-byte trailer specific to 1e-prefix section-boundary
+                # font-size blocks (those preceded by 0f 00 in the binary stream).
+                # 0x13 in body text is ALWAYS followed by 0x04 (as 13 04 xx formatting
+                # sequences) — 13 00 is never a body-text sequence, so this check is safe.
+                # WW is often 0x78 ('x') which would otherwise be emitted as text.
+                elif (prefix_byte != 0x22 and ctrl_type == 0x0b
+                      and i + 3 < n and data[i] == 0x13 and data[i+1] == 0x00):
+                    i += 4
                 # B4 sub-entry indent: apply only when no trailing pair was consumed.
                 # Entries with a trailing pair are top-level; entries without are genuine
                 # indented cross-references (e.g. "see Cockshaw", "see Fore Street").
                 if _pending_b4_indent and i == i_after_skip:
                     current_para.left_indent = 576  # 0.4 inch fallback
+                    _pending_large_font = 0.0  # 14.4pt is the heading font; suppress for sub-entries
+                if _pending_large_font:
+                    current_para.font_size = _pending_large_font
             continue
 
         # --- Word separator: 02 ---

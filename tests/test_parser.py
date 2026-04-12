@@ -1558,10 +1558,17 @@ class Test1eStructuralSkipGuard(unittest.TestCase):
 
     def test_high_b3_b4_0e_font_size_set_in_1e_file(self):
         """In a 1e file, B5=0x14 B6=0x90 in a high-B3 B4=0x0e block must still
-        set font_size on that paragraph (not bleed into the next one)."""
-        block = self.PARA_CTRL_1E + bytes([0x9a, 0x0e, 0x14, 0x90, 0x00])
+        set font_size on that paragraph (not bleed into the next one).
+        A real top-level entry always has an external trailing pair (01 XX XX) —
+        that's what prevents _pending_b4_indent from clearing _pending_large_font.
+        The detect anchors must also carry trailing pairs so left_indent is 0
+        when the body block fires."""
+        # Detect anchors with trailing pairs: left_indent stays 0 for each
+        detect = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        # Body block: B3=0x9a, B4=0x0e, B5=0x14, B6=0x90; external trailing pair confirms top-level
+        block = self.PARA_CTRL_1E + bytes([0x9a, 0x0e, 0x14, 0x90, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
-        data = self._doc_1e(block + b'TopEntry' + sep + b'NextEntry\x13\x04\x50')
+        data = MAGIC + detect * 3 + block + b'TopEntry' + sep + b'NextEntry\x13\x04\x50'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         top   = next(p for p in paras if 'TopEntry'   in p.plain_text())
@@ -1661,11 +1668,15 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
                            b7: int = 0x00) -> bytes:
         """Build a 1e 74 file with a body block whose header is B3..B7.
 
-        Pre-detection anchors use B4=0x0d (> 0x0c) so they don't set
-        left_indent before the test body block is reached.
+        Pre-detection anchors simulate top-level heading blocks: they carry an
+        external trailing pair (01 0d 0d) so the parser sees i != i_after_skip
+        and does NOT apply the sub-entry indent.  This isolates the body block
+        as the sole source of left_indent.
         """
-        # B4=0x0d: above the sub-entry threshold, won't trigger indent fallback
-        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
+        # Trailing pair 01 0d 0d after each anchor: consumed by the 3-byte trailing
+        # pair handler (min_dp=0x00 for 1e files so 0x0d qualifies), ensuring
+        # i != i_after_skip and _pending_b4_indent is not applied to the anchors.
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         body_block = self.PARA_CTRL_1E + bytes([b3, b4, b5, b6, b7])
         return MAGIC + detect_anchor * 3 + body_block + b'Hello\x13\x04\x50'
 
@@ -1677,10 +1688,80 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         self.assertAlmostEqual(paras[0].font_size, 12.0)
 
     def test_b5_0x14_large_b6_sets_font_size(self):
-        """B6=0x90 → 14.4pt."""
-        doc = parse(self._doc_1e_with_block(0xcc, 0x0d, 0x14, 0x90))
+        """B6=0x90 → 14.4pt on a confirmed top-level entry (external trailing pair present)."""
+        # Must include an external trailing pair so the parser confirms top-level status.
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        body_block = self.PARA_CTRL_1E + bytes([0xcc, 0x0d, 0x14, 0x90, 0x00])
+        trailing_pair = bytes([0x01, 0x0d, 0x0d])
+        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello\x13\x04\x50'
+        doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertAlmostEqual(paras[0].font_size, 14.4)
+
+    def test_b5_0x14_large_b6_sub_entry_no_font_size(self):
+        """B6=0x90 (14.4pt heading font) must NOT be applied to sub-entries.
+        Real-world example: 'Cockshaw / Sealwell Bridge' has B5=0x14 B6=0x90
+        but is a sub-entry (no external trailing pair) and must not be 14pt."""
+        doc = parse(self._doc_1e_with_block(0xcc, 0x0d, 0x14, 0x90))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertIsNone(paras[0].font_size,
+                          '14.4pt heading font must not bleed onto sub-entries')
+
+    def test_b5_0x14_large_b6_mid_para_no_font_size(self):
+        """B6=0x90 block encountered mid-paragraph (left_indent already set, e.g. after a
+        mid-sentence 0e 02 page break) must NOT apply 14.4pt.
+        Real-world: 'Richardson, G.; Boot and Shoe Maker, 1896 no.27 & 29' and
+        'Richardson & Co.; Dispensing and Family Chemists, 1914 no.15' were merged
+        by a mid-sentence page break; the second block had B5=0x14 B6=0x90 causing
+        the merged paragraph to wrongly show at 14pt."""
+        # Build a sub-entry paragraph (left_indent=576) that then encounters a
+        # B5=0x14 B6=0x90 block mid-paragraph via a mid-sentence page break.
+        # The 0e 02 page break is NOT emitted here — instead we simulate the
+        # state by building two consecutive blocks: first a sub-entry block that
+        # sets left_indent=576, then immediately a B5=0x14 B6=0x90 block.
+        # Since the parser processes them in the same paragraph (no flush between),
+        # left_indent is already 576 when the second block fires.
+        PARA_CTRL = bytes([0x1e, 0x74, 0x0b])
+        detect_anchor = PARA_CTRL + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        # First block: sub-entry (no trailing pair) sets left_indent=576
+        sub_block = PARA_CTRL + bytes([0xcc, 0x0d, 0x00, 0x00, 0x00])
+        # Simulated mid-sentence page break — 0e 02 followed by the layout scan.
+        # The parser will skip from 0e 02 forward to the next 1e 74 0b, so we
+        # place junk bytes that don't contain 1e 74 0b, then the next block.
+        page_break = bytes([0x0e, 0x02]) + bytes([0x00] * 8)
+        # Second block: B5=0x14 B6=0x90 — must NOT set font_size since left_indent!=0
+        font_block = PARA_CTRL + bytes([0x58, 0x05, 0x14, 0x90, 0x00])
+        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2\x13\x04\x50'
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        # The two parts should be in one paragraph (mid-sentence break), and font_size
+        # must NOT be 14.4 — it must remain None (inherited from document default).
+        combined = ' '.join(p.plain_text() for p in paras)
+        self.assertIn('Part1', combined)
+        self.assertIn('Part2', combined)
+        for p in paras:
+            if 'Part1' in p.plain_text() or 'Part2' in p.plain_text():
+                self.assertNotEqual(p.font_size, 14.4,
+                                    '14.4pt must not bleed onto mid-paragraph 1e 74 0b blocks')
+
+    def test_b5_0x14_b6_78_mid_para_no_font_size(self):
+        """B6=0x78 (12pt) block mid-paragraph must NOT override the paragraph font.
+        Real-world: 'Little, A. & G.; County Roller Mills, 1863' and
+        'Maltby, Fredeick Walton; Tailor & Outfitter, 1914 no.12' were merged by a
+        mid-sentence page break; the Maltby block had B5=0x14 B6=0x78 causing the
+        merged paragraph to wrongly show at 12pt instead of the document default."""
+        PARA_CTRL = bytes([0x1e, 0x74, 0x0b])
+        detect_anchor = PARA_CTRL + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        sub_block = PARA_CTRL + bytes([0xcc, 0x0d, 0x00, 0x00, 0x00])
+        page_break = bytes([0x0e, 0x02]) + bytes([0x00] * 8)
+        font_block = PARA_CTRL + bytes([0x58, 0x05, 0x14, 0x78, 0x00])
+        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2\x13\x04\x50'
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        for p in paras:
+            if 'Part1' in p.plain_text() or 'Part2' in p.plain_text():
+                self.assertIsNone(p.font_size,
+                                  '12pt must not bleed onto mid-paragraph 1e 74 0b blocks')
 
     def test_b5_not_0x14_no_font_size(self):
         """When B5 != 0x14, font_size must remain None."""
@@ -1689,18 +1770,20 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         self.assertIsNone(paras[0].font_size)
 
     def test_b4_lte_0x0c_sets_indent_fallback(self):
-        """B4 <= 0x0c in a 1e 74 body block with no trailing pair must set left_indent = 576."""
+        """A 1e 74 body block with no external trailing pair must set left_indent = 576.
+        B4=0x0c used here; B4 value is not the discriminator — the absence of a
+        trailing pair is."""
         doc = parse(self._doc_1e_with_block(0xcc, 0x0c, 0x00, 0x00))
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 576)
 
-    def test_b4_lte_0x0c_with_trailing_pair_no_indent(self):
-        """B4 <= 0x0c WITH a trailing 01 XX XX pair must NOT indent.
-        Top-level index entries (e.g. 'Bell, Henry & Sons') have B4 <= 0x0c but
-        always have a trailing pair; only genuine cross-reference sub-entries
-        (e.g. 'see Cockshaw') lack the trailing pair and should be indented."""
-        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
-        # body block: B4=0x09 (≤ 0x0c) followed by trailing 01 2b 2b
+    def test_external_trailing_pair_prevents_indent(self):
+        """An external 01 XX XX trailing pair after the block must prevent indenting,
+        regardless of B4.  Top-level entries (B5=0x14 B6=0x90, like 'Bell, Henry')
+        always carry an external trailing pair; sub-entries (B5=0x01 B6=B7) do not."""
+        # Anchors also carry trailing pairs so they don't contaminate left_indent.
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        # B4=0x09 with external trailing 01 2b 2b — should NOT indent
         body_block = self.PARA_CTRL_1E + bytes([0xcc, 0x09, 0x00, 0x00, 0x00])
         trailing_pair = bytes([0x01, 0x2b, 0x2b])
         data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello\x13\x04\x50'
@@ -1708,11 +1791,20 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 0)
 
-    def test_b4_gt_0x0c_no_indent_fallback(self):
-        """B4 > 0x0c in a 1e 74 body block must leave left_indent = 0."""
-        doc = parse(self._doc_1e_with_block(0xcc, 0x0d, 0x00, 0x00))
+    def test_no_trailing_pair_sets_indent_regardless_of_b4(self):
+        """A block with no external trailing pair must indent even when B4 > 0x0c.
+        Real-world example: 'Beaumont Park' has B4=0x0e but is a genuine sub-entry
+        (carries B5=0x01 B6=B7 doubled pair inside the block header, no external pair)."""
+        # Anchors carry trailing pairs so they don't contaminate left_indent.
+        detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        # B4=0x0e (above old threshold) with B5=0x01 B6=B7=0x0d inside block, no external pair
+        body_block = self.PARA_CTRL_1E + bytes([0x5c, 0x0e, 0x01, 0x0d, 0x0d])
+        data = MAGIC + detect_anchor * 3 + body_block + b'Hello\x13\x04\x50'
+        doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
-        self.assertEqual(paras[0].left_indent, 0)
+        self.assertEqual(paras[0].left_indent, 576,
+                         'Entry with no external trailing pair must be indented '
+                         'even when B4 > 0x0c')
 
     def test_rtf_emits_fs_for_font_size(self):
         """RTF output must contain \\fs{half_pts} when font_size is set."""
@@ -1797,6 +1889,195 @@ class Test1e78ScanForwardGuard(unittest.TestCase):
         self.assertEqual(second.left_indent, 0,
                          'Block B with B4=0x0e must not be indented; '
                          'stale B4 from Block A must not bleed through')
+
+
+class Test1eSectionBoundaryTrailer(unittest.TestCase):
+    """Regression: 1e-prefix section-boundary font-size blocks emit '13 00 WW WW'
+    trailing bytes after the standard 8-byte skip.  When WW=0x78 ('x') this leaked
+    into body text producing 'xContents' artefacts.  Real-world: BINDINDX.HEX."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        return MAGIC + anchor * 3 + body
+
+    def test_13_00_78_00_no_x_emitted(self):
+        """13 00 78 00 trailer after B5=0x14 block must not emit 'x'."""
+        # Block: 1e 74 0b 68 0f 14 78 00 → standard 8-byte skip
+        # Trailer: 13 00 78 00 → must be consumed silently (WW=0x78='x' is printable)
+        block = self.PARA_CTRL_1E + bytes([0x68, 0x0f, 0x14, 0x78, 0x00])
+        trailer = bytes([0x13, 0x00, 0x78, 0x00])
+        content = b'Contents\x13\x04\x50'
+        data = self._doc_1e(block + trailer + content)
+        doc = parse(data)
+        text = ' '.join(p.plain_text() for p in doc.paragraphs if p.plain_text().strip())
+        self.assertNotIn('x', text.replace('Contents', ''),
+                         "13 00 78 00 trailer must not emit 'x' into the output")
+        self.assertIn('Contents', text)
+
+    def test_13_00_00_00_trailer_consumed(self):
+        """13 00 00 00 trailer (WW=0x00) must also be consumed silently."""
+        block = self.PARA_CTRL_1E + bytes([0x68, 0x0f, 0x14, 0x90, 0x00])
+        trailer = bytes([0x13, 0x00, 0x00, 0x00])
+        content = b'Contents\x13\x04\x50'
+        data = self._doc_1e(block + trailer + content)
+        doc = parse(data)
+        text = ' '.join(p.plain_text() for p in doc.paragraphs if p.plain_text().strip())
+        self.assertIn('Contents', text)
+
+    def test_13_00_trailer_no_left_indent(self):
+        """Section-boundary blocks with 13 00 WW WW trailer are top-level structural
+        markers and must not receive the 576-twip sub-entry indent."""
+        block = self.PARA_CTRL_1E + bytes([0x68, 0x0f, 0x14, 0x78, 0x00])
+        trailer = bytes([0x13, 0x00, 0x78, 0x00])
+        content = b'Contents\x13\x04\x50'
+        data = self._doc_1e(block + trailer + content)
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if 'Contents' in p.plain_text()]
+        self.assertTrue(paras, 'Contents paragraph not found')
+        self.assertEqual(paras[0].left_indent, 0,
+                         'Section-boundary block must not produce a sub-entry indent')
+
+
+class Test1eB6B7TabConsumed(unittest.TestCase):
+    """Regression test: 1e 74 0b blocks with B5=sequence-byte, B6=0f, B7=04.
+
+    In BINDINDX.HEX sub-entries under a heading (e.g. 'Auction Marts') use a
+    variant block structure where B5 carries a sequence number (0x31, 0x32, 0x33)
+    and B6/B7 = 0x0f 0x04 encode the column spec for the entry.  Previously the
+    parser skipped only 6 bytes and left '0f 04 B1 B2 01 XX XX' for the main loop,
+    which then emitted a spurious tab character and recorded a 4200-twip tab stop,
+    pushing the text to the centre of the document.  The block must now be fully
+    consumed without emitting a tab, matching the behaviour of the B5=0x0f B6=0x04
+    case (e.g. 'Leazes Nursery Estate').
+    """
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+
+    def _doc_1e_sub_entry(self, b5_seq: int) -> bytes:
+        """Build a 1e 74 file containing one sub-entry block with B5=b5_seq,
+        B6=0x0f, B7=0x04 followed by the standard column/ctrl/trailing structure."""
+        # Anchor blocks with trailing pairs so they don't contaminate left_indent.
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        # Sub-entry block: B3=0x8e B4=0x0d B5=seq B6=0x0f B7=0x04, then
+        # column 0x23, ctrl_byte 0x74, trailing pair 01 0d 0d
+        block = self.PARA_CTRL_1E + bytes([0x8e, 0x0d, b5_seq, 0x0f, 0x04, 0x23, 0x74, 0x01, 0x0d, 0x0d])
+        return MAGIC + anchor * 3 + block + b'Hello\x13\x04\x50'
+
+    def test_b6_0f_b7_04_no_tab_emitted(self):
+        """Block with B5=sequence-byte, B6=0x0f, B7=0x04 must not emit a tab character."""
+        doc = parse(self._doc_1e_sub_entry(0x31))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].plain_text().strip(), 'Hello')
+        self.assertNotIn('\t', paras[0].plain_text(),
+                         'Spurious tab emitted from structural B6=0x0f B7=0x04 block')
+
+    def test_b6_0f_b7_04_no_tab_stop_recorded(self):
+        """Block with B5=sequence-byte, B6=0x0f, B7=0x04 must not record a tab stop."""
+        doc = parse(self._doc_1e_sub_entry(0x32))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].tab_stops, [],
+                         'Spurious 4200-twip tab stop recorded from structural block')
+
+    def test_b6_0f_b7_04_still_sets_sub_entry_indent(self):
+        """Block with B5=sequence-byte, B6=0x0f, B7=0x04 must still produce left_indent=576."""
+        doc = parse(self._doc_1e_sub_entry(0x33))
+        paras = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertEqual(paras[0].left_indent, 576,
+                         'Sub-entry indent must still be applied when B6=0x0f B7=0x04')
+
+
+class Test1eBodyZoneMetadataBlockSkip(unittest.TestCase):
+    """Regression: in 1e-prefix files a B3=0x00, B4=0x00, B5=0x14 block in the body
+    zone is a section-boundary metadata block whose payload contains binary data.
+    Bytes like 0x25 ('%'), 0x24 ('$'), 0xc2 ('?') in the payload were leaking as
+    text before the self-referential 22 6d 6d skip fired.  Real-world: BINDINDX.HEX
+    produced '%$? HEXHAM MECHANICS'' artefact before this fix."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+    MAGIC_1E = b'DOC'
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        """Minimal 1e-variant document with 3 top-level detect anchors + body."""
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        return self.MAGIC_1E + anchor * 3 + body
+
+    def test_b3_00_b4_00_b5_14_body_block_skipped(self):
+        """B3=0x00, B4=0x00, B5=0x14 block in body zone must be skipped; payload bytes
+        (including printable ones like '%', '$', 0xc2) must not appear in output."""
+        # Section-boundary metadata block: 1e 74 0b 00 00 14 78 00
+        # followed by a binary payload that contains printable junk bytes
+        metadata_block = self.PARA_CTRL_1E + bytes([0x00, 0x00, 0x14, 0x78, 0x00])
+        # Payload that would produce '%$?' artefacts if not skipped
+        payload = bytes([0x0c, 0x25, 0x01, 0x24, 0x01, 0x01, 0xc2, 0x01, 0x01, 0x02])
+        # Next real paragraph with content
+        next_para = self.PARA_CTRL_1E + bytes([0x9a, 0x0d, 0x14, 0x78, 0x00]) + b'HEXHAM\x13\x04\x50'
+        data = self._doc_1e(metadata_block + payload + next_para)
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs if p.plain_text().strip()]
+        combined = ' '.join(texts)
+        self.assertIn('HEXHAM', combined, 'Real content after metadata block must appear')
+        self.assertNotIn('%', combined, "0x25 '%' must not leak from metadata payload")
+        self.assertNotIn('$', combined, "0x24 '$' must not leak from metadata payload")
+
+    def test_b3_00_b5_00_not_skipped_in_body(self):
+        """B3=0x00, B5=0x00 detect-anchor blocks in body zone must NOT be skipped
+        by the section-boundary guard (B5=0x14 is the distinguishing flag)."""
+        # Standard detect anchor (B3=0x00, B4=0x0d, B5=0x00): must be processed normally
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        content_block = self.PARA_CTRL_1E + bytes([0x9a, 0x0d, 0x14, 0x78, 0x00]) + b'Hello\x13\x04\x50'
+        data = self._doc_1e(anchor + content_block)
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertTrue(any('Hello' in t for t in texts),
+                        'Content after B5=0x00 detect anchor must not be skipped')
+
+
+class Test1eB5PageBreakInBlockHeader(unittest.TestCase):
+    """Regression: 1e-prefix blocks with B5=0x0e, B6=0x01/0x02 encode a page-break
+    signal directly in the block header.  The binary layout blob that follows (which
+    may contain a LocoScript date template with printable ASCII bytes such as 'F',
+    "date", "February", "Monday", "pm") must not be emitted as body text.
+    Real-world: BINDINDX.HEX last paragraph was '?Fdate th FebruaryFeb Monday pm'."""
+
+    PARA_CTRL_1E = bytes([0x1e, 0x74, 0x0b])
+    MAGIC_1E = b'DOC'
+
+    def _doc_1e(self, body: bytes) -> bytes:
+        anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
+        return self.MAGIC_1E + anchor * 3 + body
+
+    def _make_date_blob(self) -> bytes:
+        """Minimal date-template blob resembling real BINDINDX.HEX payload."""
+        return (bytes([0xf0, 0x00, 0x00, 0x00, 0x46, 0x00, 0x00, 0x00])
+                + b'\x01\x00date\x05\x00\x01\x00\x00\x00\x03\x00\x02th\x02'
+                + b'\x00\x00\x00\x09\x00\x08February')
+
+    def test_b5_0e_b6_02_page_break_no_date_blob(self):
+        """B5=0x0e, B6=0x02 block must be skipped; date-template payload must not appear."""
+        content_para = self.PARA_CTRL_1E + bytes([0xcc, 0x10, 0x14, 0x78, 0x00]) + b'Family\x13\x04\x50'
+        pb_block = self.PARA_CTRL_1E + bytes([0xcc, 0x10, 0x0e, 0x02, 0x00])
+        data = self._doc_1e(content_para + pb_block + self._make_date_blob())
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs if p.plain_text().strip()]
+        combined = ' '.join(texts)
+        self.assertIn('Family', combined, 'Content before page-break block must appear')
+        self.assertNotIn('date', combined, "'date' from blob must not appear in output")
+        self.assertNotIn('February', combined, "'February' from blob must not appear")
+        self.assertNotIn('F', combined.replace('Family', ''),
+                         "0x46 'F' from blob must not appear in output")
+
+    def test_b5_0e_b6_01_page_break_no_date_blob(self):
+        """B5=0x0e, B6=0x01 (section break variant) also silently consumed."""
+        pb_block = self.PARA_CTRL_1E + bytes([0xcc, 0x10, 0x0e, 0x01, 0x00])
+        content_para = self.PARA_CTRL_1E + bytes([0xcc, 0x10, 0x14, 0x78, 0x00]) + b'After\x13\x04\x50'
+        data = self._doc_1e(pb_block + self._make_date_blob() + content_para)
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs if p.plain_text().strip()]
+        combined = ' '.join(texts)
+        self.assertNotIn('date', combined)
+        self.assertNotIn('February', combined)
 
 
 if __name__ == '__main__':
