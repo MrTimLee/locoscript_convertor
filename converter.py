@@ -74,7 +74,11 @@ def _rtf_run(run: 'TextRun') -> str:
         pre.append(r'\sub');     post.insert(0, r'\nosupersub')
     prefix = ' '.join(pre) + ' ' if pre else ''
     suffix = ' ' + ' '.join(post) if post else ''
-    return prefix + escaped + suffix
+    content = prefix + escaped + suffix
+    if run.font_size is not None:
+        # Wrap in an RTF group so the font-size change is scoped to this run only.
+        return '{' + rf'\fs{int(run.font_size * 2)} ' + content + '}'
+    return content
 
 
 def _rtf_para(para: 'Paragraph') -> str:
@@ -183,8 +187,9 @@ def save_docx(doc: Document, dest: Path) -> None:
             if run.underline:    r.underline = True
             if run.superscript:  r.font.superscript = True
             if run.subscript:    r.font.subscript = True
-            if para.font_size is not None:
-                r.font.size = Pt(para.font_size)
+            effective_size = run.font_size if run.font_size is not None else para.font_size
+            if effective_size is not None:
+                r.font.size = Pt(effective_size)
 
     section = docx.sections[0]
 

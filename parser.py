@@ -7,9 +7,6 @@ MAGIC = b'DOC'
 
 CTRL_PREFIX    = bytes([0x22, 0x61])        # "a — control sequence prefix
 WORD_SEP       = 0x02                        # inter-word space
-PARA_BREAK     = bytes([0x13, 0x04, 0x50])  # paragraph end  (P)
-LINE_BREAK     = bytes([0x13, 0x04, 0x78])  # line break     (x)
-ITALIC_ON      = bytes([0x13, 0x04, 0x64])  # italic start   (d)
 TAB_SEQ        = bytes([0x09, 0x05, 0x01])  # tab / citation indent
 PARA_INDENT    = bytes([0x08, 0x05, 0x01])  # paragraph indent marker (5 bytes total)
 SECTION_BREAK  = 0x0e                        # section / page break marker byte
@@ -59,13 +56,15 @@ class ParseError(Exception):
 class TextRun:
     """A run of plain text with optional inline formatting."""
     def __init__(self, text: str, italic: bool = False, bold: bool = False,
-                 underline: bool = False, superscript: bool = False, subscript: bool = False):
+                 underline: bool = False, superscript: bool = False, subscript: bool = False,
+                 font_size: float | None = None):
         self.text = text
         self.italic = italic
         self.bold = bold
         self.underline = underline
         self.superscript = superscript
         self.subscript = subscript
+        self.font_size = font_size  # point size for this run (None = inherit paragraph/doc default)
 
     def __repr__(self):
         flags = ', '.join(k for k, v in [
@@ -515,13 +514,14 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     underline = False
     superscript = False
     subscript = False
+    current_font_size: float | None = None
 
     def flush_run():
         nonlocal current_text
         text = ''.join(current_text)
         if text.strip():
             current_para.runs.append(
-                TextRun(text, italic, bold, underline, superscript, subscript)
+                TextRun(text, italic, bold, underline, superscript, subscript, current_font_size)
             )
         current_text = []
 
@@ -578,37 +578,17 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             i = next_para if next_para >= 0 else n
             continue
 
-        # --- Paragraph break: 13 04 50 ---
-        if data[i:i+3] == PARA_BREAK:
+        # --- Font size: 13 04 xx  (xx / 10 = point size) ---
+        # 0x50=8pt, 0x64=10pt, 0x78=12pt, 0x8c=14pt. Purely inline; no structural meaning.
+        if data[i] == 0x13 and i+2 < n and data[i+1] == 0x04:
             flush_run()
-            flush_para()
+            current_font_size = data[i+2] / 10.0
             i += 3
-            # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
-                i += 4
-            continue
-
-        # --- Italic start: 13 04 64 ---
-        if data[i:i+3] == ITALIC_ON:
-            flush_run()
-            italic = True
-            i += 3
-            # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
-                i += 4
-            continue
-
-        # --- Line break / italic end: 13 04 78 ---
-        if data[i:i+3] == LINE_BREAK:
-            flush_run()
-            if italic:
-                italic = False
-            else:
-                current_text.append('\n')
-            i += 3
-            # Skip trailing indent metadata: 00 01 + doubled pair
-            if i+3 < n and data[i] == 0x00 and data[i+1] == 0x01 and data[i+2] == data[i+3] and data[i+2] > 0:
-                i += 4
+            # Skip trailing: optional 00 null byte, then optional 01 XX XX doubled-pair metadata
+            if i < n and data[i] == 0x00:
+                i += 1
+            if i+2 < n and data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] > 0:
+                i += 3
             continue
 
         # --- Italic off: 09 05 01 + 2 param bytes ---
@@ -645,22 +625,19 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         #            → content
         # Without this handler the printable param bytes (e.g. '1a', 'Rf') and any
         # following doubled pairs (e.g. '**', '>>') leak into the output as artefacts.
-        # 0f 02 PP ctrl 0b — paragraph separator used in Contents Page sections
-        # of non-standard variant files (22 6d, 1e 74, etc.).  Only active for
-        # non-standard ctrl_byte (not 0x61) where this pattern is confirmed as
-        # a paragraph boundary.
-        if (ctrl_byte != 0x61
-                and data[i] == 0x0f and i+1 < n and data[i+1] == 0x02
+        # 0f 02 PP ctrl 0b — paragraph break in all file variants.
+        # The byte following 0f (01 or 02) distinguishes line-continuation from
+        # paragraph-break; checking prefix_byte/ctrl_byte guards against false
+        # positives inside binary block headers.
+        if (data[i] == 0x0f and i+1 < n and data[i+1] == 0x02
                 and i+3 < n and data[i+2] == prefix_byte and data[i+3] == ctrl_byte):
             flush_run()
             flush_para()
             i += 2
             continue
 
-        # 0f 01 PP ctrl 0b — line break within a paragraph in non-standard
-        # variant files.  Only active for non-standard ctrl_byte (not 0x61).
-        if (ctrl_byte != 0x61
-                and data[i] == 0x0f and i+1 < n and data[i+1] == 0x01
+        # 0f 01 PP ctrl 0b — soft return (line break within paragraph) in all variants.
+        if (data[i] == 0x0f and i+1 < n and data[i+1] == 0x01
                 and i+3 < n and data[i+2] == prefix_byte and data[i+3] == ctrl_byte):
             flush_run()
             current_text.append('\n')

@@ -30,6 +30,11 @@ from converter import to_txt, to_rtf
 MAGIC = b'DOC'
 PARA_CTRL = bytes([0x22, 0x61, 0x0b])
 
+# 0f 02 + block header (8 bytes) = paragraph break for standard 22 61 files
+PARA_SEP = bytes([0x0f, 0x02]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+# 0f 01 + block header (8 bytes) = soft line break within paragraph
+LINE_SEP = bytes([0x0f, 0x01]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+
 def _doc(body: bytes) -> bytes:
     """Wrap body bytes in the minimal valid Locoscript 2 envelope.
 
@@ -155,19 +160,22 @@ class TestWordSeparator(unittest.TestCase):
 class TestParagraphBreak(unittest.TestCase):
 
     def test_para_break_splits_paragraphs(self):
-        # 13 04 50 should end one paragraph and start another
-        data = _doc(b'First\x13\x04\x50Second')
+        # 0f 02 22 61 0b [...] should end one paragraph and start another
+        data = _doc(b'First' + PARA_SEP + b'Second')
         paras = _paras(data)
         self.assertEqual(len(paras), 2)
         self.assertIn('First', paras[0])
         self.assertIn('Second', paras[1])
 
-    def test_para_break_with_trailing_metadata(self):
-        # 13 04 50 00 01 4a 4a — trailing 00 01 + doubled pair must be consumed
+    def test_font_size_trailing_metadata_consumed(self):
+        # 13 04 50 (font-size 8pt) followed by 00 01 4a 4a — trailing bytes
+        # must be consumed; 'JJ' (0x4a 0x4a) must not appear in the output
         data = _doc(b'Alpha\x13\x04\x50\x00\x01\x4a\x4aOmega')
-        paras = _paras(data)
-        self.assertEqual(len(paras), 2)
-        self.assertNotIn('J', paras[1][:2])  # 'JJ' (0x4a 0x4a) must not appear
+        text = _plain(data)
+        self.assertIn('Alpha', text)
+        self.assertIn('Omega', text)
+        self.assertNotIn('JJ', text)
+        self.assertNotIn('J', text.split('Alpha')[1][:2])
 
 
 class TestBoldUnderlineFormatting(unittest.TestCase):
@@ -213,8 +221,8 @@ class TestBoldUnderlineFormatting(unittest.TestCase):
 
     def test_pending_newline_survives_bold_off(self):
         # A '\n' pending in current_text must not be dropped when bold-off fires
-        # Sequence: content, line-break (emits \n), bold-off, more content
-        data = _doc(b'Line1\x13\x04\x78\x09\x00Line2')
+        # Sequence: content, 0f 01 line-break (emits \n), bold-off, more content
+        data = _doc(b'Line1' + LINE_SEP + b'\x09\x00Line2')
         text = _plain(data)
         self.assertIn('Line1', text)
         self.assertIn('Line2', text)
@@ -224,8 +232,8 @@ class TestBoldUnderlineFormatting(unittest.TestCase):
 class TestItalic(unittest.TestCase):
 
     def test_italic_on_sets_italic_flag(self):
-        # 13 04 64 turns italic on
-        data = _doc(b'Normal\x02\x13\x04\x64italic\x02\x13\x04\x78after')
+        # 08 05 turns italic on; 09 05 turns italic off
+        data = _doc(b'Normal\x02\x08\x05italic\x02\x09\x05after')
         doc = parse(data)
         runs = [r for p in doc.paragraphs for r in p.runs]
         italic_runs = [r for r in runs if r.italic]
@@ -240,8 +248,8 @@ class TestItalic(unittest.TestCase):
         self.assertTrue(any('plain' in r.text for r in plain_runs))
 
     def test_line_break_when_not_italic(self):
-        # 13 04 78 when italic=False emits a newline
-        data = _doc(b'Line1\x13\x04\x78Line2')
+        # 0f 01 22 61 0b [...] emits a soft return (newline) within a paragraph
+        data = _doc(b'Line1' + LINE_SEP + b'Line2')
         text = _plain(data)
         self.assertIn('\n', text)
 
@@ -377,8 +385,8 @@ class TestTabStopPositions(unittest.TestCase):
         # Tab stops on one paragraph must not bleed into the next
         data = _doc(
             b'A\x0f\x04\x27\x61B'
-            b'\x13\x04\x50'                         # paragraph break
-            b'CD'                                    # no tab sequence — no tab stops
+            + PARA_SEP                              # paragraph break
+            + b'CD'                                 # no tab sequence — no tab stops
         )
         doc = parse(data)
         self.assertIn(0x27 * 144, doc.paragraphs[0].tab_stops)
@@ -737,7 +745,7 @@ class TestParagraphAlignment(unittest.TestCase):
 
     def test_rtf_left_has_no_alignment_code(self):
         from converter import to_rtf
-        data = _doc(b'Hello\x13\x04\x50')
+        data = _doc(b'Hello')
         out = to_rtf(parse(data))
         self.assertIn(r'\pard ', out)
         self.assertNotIn(r'\qc', out)
@@ -859,9 +867,10 @@ class TestVariableCtrlPrefix(unittest.TestCase):
         self.assertEqual(_plain(data), 'Hello world')
 
     def test_22_6d_multi_paragraph(self):
-        # Multiple paragraphs separated by 22 6d 0b blocks
+        # Multiple paragraphs separated by 0f 02 22 6d 0b [...] in a 22 6d file
+        para_sep_m = bytes([0x0f, 0x02]) + self._PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
         para2 = self._PARA_CTRL_M + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
-        data = self._doc_m(b'First\x13\x04\x50' + para2 + b'Second\x13\x04\x50')
+        data = self._doc_m(b'First' + para_sep_m + para2 + b'Second')
         self.assertEqual(_paras(data), ['First', 'Second'])
 
     def test_a6_0e_structural_block_skipped(self):
@@ -976,15 +985,15 @@ class TestHeaderFooterExtraction(unittest.TestCase):
 
     def test_variable_ctrl_seq_does_not_consume_formatting_prefix(self):
         # A variable-type ctrl sequence (22 61 44) where the byte immediately
-        # after the type byte is 0x13 (start of 13 04 50 para break) must leave
-        # that para break intact for the main loop.
-        # Old i+=4 behaviour consumed 0x13, making the para break invisible and
-        # leaking 0x50 ('P') as a printable character.
+        # after the type byte is 0x13 (start of 13 04 50 font-size command) must
+        # leave that formatting command intact for the main loop.
+        # Old i+=4 behaviour consumed 0x13, making the font-size command invisible
+        # and leaking 0x50 ('P') as a printable character.
         data = _doc(b'First\x22\x61\x44\x13\x04\x50Second')
-        paras = _paras(data)
-        self.assertEqual(len(paras), 2)
-        self.assertIn('First', paras[0])
-        self.assertIn('Second', paras[1])
+        text = _plain(data)
+        self.assertNotIn('P', text.split('First')[1][:2])  # 0x50 must not leak as 'P'
+        self.assertIn('First', text)
+        self.assertIn('Second', text)
 
     # -----------------------------------------------------------------------
     # Fix: 01 XX XX (3-byte) trailing indent fallback
@@ -1184,19 +1193,16 @@ class TestMidSentenceBlockFormatting(unittest.TestCase):
     """22 61 0b block with 13 04 XX at B5-B6 should leave the formatting
     sequence for the main loop rather than consuming it in the block skip."""
 
-    def test_italic_on_not_consumed_by_block_skip(self):
-        """13 04 64 at B5-B6-B7 should turn on italic, not be skipped."""
-        # 22 61 0b B3 B4 13 04 64 → italic-on left for main loop
+    def test_font_size_not_consumed_by_block_skip(self):
+        """13 04 64 at B5-B6-B7 must not be consumed by the block skip;
+        the main loop should process it as a font-size change (10pt) on the run."""
+        # 22 61 0b B3 B4 13 04 64 → _skip_ctrl_sequence skips 5 bytes (B3 B4 left out),
+        # leaving 13 04 64 for the main loop to set current_font_size=10.0 on the next run.
         block = PARA_CTRL + bytes([0x34, 0x00, 0x13, 0x04, 0x64])
-        body = (
-            block
-            + b'text'
-            + bytes([0x13, 0x04, 0x78])   # italic off
-            + bytes([0x13, 0x04, 0x50])   # paragraph break
-        )
+        body = block + b'text'
         doc = parse(_doc(body))
-        italic_runs = [r for p in doc.paragraphs for r in p.runs if r.italic]
-        self.assertTrue(any('text' in r.text for r in italic_runs))
+        runs = [r for p in doc.paragraphs for r in p.runs if r.text.strip()]
+        self.assertAlmostEqual(runs[0].font_size, 10.0)
 
     def test_no_spurious_newline_when_italic_consumed(self):
         """Without fix, 13 04 78 fires as line break; with fix it fires as
@@ -1219,19 +1225,14 @@ class TestMidSentenceBlockFormatting(unittest.TestCase):
         self.assertIn('OED', text)
         self.assertIn('after', text)
 
-    def test_para_break_at_b5_not_consumed(self):
-        """13 04 50 at B5-B6-B7 should flush the paragraph, not be skipped."""
+    def test_font_size_at_b5_not_consumed(self):
+        """13 04 50 at B5-B6-B7 must not be consumed by the block skip;
+        the main loop should process it as a font-size change (8pt) on the run."""
         block = PARA_CTRL + bytes([0x54, 0x08, 0x13, 0x04, 0x50])
-        body = (
-            b'first'
-            + block
-            + b'second'
-            + bytes([0x13, 0x04, 0x50])
-        )
-        paras = _paras(_doc(body))
-        self.assertEqual(len(paras), 2)
-        self.assertIn('first', paras[0])
-        self.assertIn('second', paras[1])
+        body = block + b'text'
+        doc = parse(_doc(body))
+        runs = [r for p in doc.paragraphs for r in p.runs if r.text.strip()]
+        self.assertAlmostEqual(runs[0].font_size, 8.0)
 
 
 class TestContentsPageControlBlock(unittest.TestCase):
@@ -1642,7 +1643,7 @@ class Test1eStructuralSkipGuard(unittest.TestCase):
         # Body block: B3=0x9a, B4=0x0e, B5=0x14, B6=0x90; external trailing pair confirms top-level
         block = self.PARA_CTRL_1E + bytes([0x9a, 0x0e, 0x14, 0x90, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         sep = bytes([0x0f, 0x02]) + self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00])
-        data = MAGIC + detect * 3 + block + b'TopEntry' + sep + b'NextEntry\x13\x04\x50'
+        data = MAGIC + detect * 3 + block + b'TopEntry' + sep + b'NextEntry'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         top   = next(p for p in paras if 'TopEntry'   in p.plain_text())
@@ -1752,7 +1753,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         # i != i_after_skip and _pending_b4_indent is not applied to the anchors.
         detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         body_block = self.PARA_CTRL_1E + bytes([b3, b4, b5, b6, b7])
-        return MAGIC + detect_anchor * 3 + body_block + b'Hello\x13\x04\x50'
+        return MAGIC + detect_anchor * 3 + body_block + b'Hello'
 
     def test_b5_0x14_sets_font_size(self):
         """When B5=0x14 in a 1e 74 body block, font_size must be B6 / 10.0."""
@@ -1767,7 +1768,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         body_block = self.PARA_CTRL_1E + bytes([0xcc, 0x0d, 0x14, 0x90, 0x00])
         trailing_pair = bytes([0x01, 0x0d, 0x0d])
-        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello\x13\x04\x50'
+        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertAlmostEqual(paras[0].font_size, 14.4)
@@ -1805,7 +1806,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         page_break = bytes([0x0e, 0x02]) + bytes([0x00] * 8)
         # Second block: B5=0x14 B6=0x90 — must NOT set font_size since left_indent!=0
         font_block = PARA_CTRL + bytes([0x58, 0x05, 0x14, 0x90, 0x00])
-        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2\x13\x04\x50'
+        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         # The two parts should be in one paragraph (mid-sentence break), and font_size
@@ -1829,7 +1830,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         sub_block = PARA_CTRL + bytes([0xcc, 0x0d, 0x00, 0x00, 0x00])
         page_break = bytes([0x0e, 0x02]) + bytes([0x00] * 8)
         font_block = PARA_CTRL + bytes([0x58, 0x05, 0x14, 0x78, 0x00])
-        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2\x13\x04\x50'
+        data = MAGIC + detect_anchor * 3 + sub_block + b'Part1\x02' + page_break + font_block + b'Part2'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         for p in paras:
@@ -1860,7 +1861,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         # B4=0x09 with external trailing 01 2b 2b — should NOT indent
         body_block = self.PARA_CTRL_1E + bytes([0xcc, 0x09, 0x00, 0x00, 0x00])
         trailing_pair = bytes([0x01, 0x2b, 0x2b])
-        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello\x13\x04\x50'
+        data = MAGIC + detect_anchor * 3 + body_block + trailing_pair + b'Hello'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 0)
@@ -1873,7 +1874,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
         detect_anchor = self.PARA_CTRL_1E + bytes([0x00, 0x0d, 0x00, 0x00, 0x00]) + bytes([0x01, 0x0d, 0x0d])
         # B4=0x0e (above old threshold) with B5=0x01 B6=B7=0x0d inside block, no external pair
         body_block = self.PARA_CTRL_1E + bytes([0x5c, 0x0e, 0x01, 0x0d, 0x0d])
-        data = MAGIC + detect_anchor * 3 + body_block + b'Hello\x13\x04\x50'
+        data = MAGIC + detect_anchor * 3 + body_block + b'Hello'
         doc = parse(data)
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 576,
@@ -1891,7 +1892,7 @@ class TestFontSizeFrom1eVariant(unittest.TestCase):
     def test_rtf_no_fs_when_no_font_size(self):
         """RTF output must not contain \\fs when font_size is None."""
         from converter import to_rtf
-        doc = parse(_doc(b'Hello\x13\x04\x50'))
+        doc = parse(_doc(b'Hello'))
         rtf = to_rtf(doc)
         self.assertNotIn(r'\fs', rtf)
 
@@ -2336,12 +2337,13 @@ class TestPageBreakPropagation(unittest.TestCase):
         self.assertIn('with', result)
         self.assertNotIn(' - ', result)
 
-    def test_trailing_indent_low_value_consumed_after_para_break(self):
-        """00 01 0e 0e after 13 04 50 must be consumed (value 0x0e < 0x20).
-        Prevents spurious 0e-prefixed bytes from firing section-break handlers."""
+    def test_trailing_indent_low_value_consumed_after_font_size(self):
+        """00 01 0e 0e after 13 04 50 (font-size change) must be consumed (value 0x0e < 0x20).
+        Without consumption, the bare 0e leaks and fires the section-break handler,
+        causing a spurious page_break_before on the next paragraph."""
         body = (b'word\x13\x04\x50\x00\x01\x0e\x0e'
-                + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
-                + b'next\x13\x04\x50')
+                + bytes([0x0f, 0x02]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + b'next')
         data = _doc(body)
         doc = parse(data)
         content = [p for p in doc.paragraphs if p.plain_text().strip()]
