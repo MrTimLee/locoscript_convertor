@@ -157,11 +157,11 @@ Three-byte sequence that begins an italic text run. Italic state is tracked and 
 ### Line Break / Italic Off — `13 04 78`
 Three-byte sequence. If italic is currently active it acts as "italic off" (end of italic run). If italic is not active it emits a hard line break (`\n`) within the current paragraph.
 
-### Tab / Citation Indent — `09 05 01` + 2 param bytes
-Five bytes total. Emits a tab character (`\t`) in the output. The first param byte (`XX`) encodes the **explicit tab column position** in scale pitch units (`XX × twips_per_unit` gives the RTF `\tx` position). A zero value means no explicit position. The second param byte is always the same value (doubled-pair pattern) and is consumed along with the first.
+### Italic Off — `09 05 01` + 2 param bytes
+Five bytes total. Turns italic off (consistent with the `09 XX` off pattern, second byte `0x05` = italic). The two trailing param bytes are consumed to prevent them leaking as artefacts. No tab character is emitted. Tab stop positions from paragraph indentation use `0f 04` sequences instead.
 
-### Paragraph Indent Marker — `08 05 01` + 2 param bytes
-Five bytes total. Structural paragraph indent/style marker. Emits nothing. The doubled-pair value XX (where data[i+3] == data[i+4]) encodes one of two things:
+### Italic On + Paragraph Indent — `08 05 01` + 2 param bytes
+Five bytes total. Turns italic on (consistent with the `08 XX` on pattern, second byte `0x05` = italic) and optionally sets the paragraph's left indent. The doubled-pair value XX (where `data[i+3] == data[i+4]`) encodes one of two things:
 
 | XX range | Meaning | Action |
 |----------|---------|--------|
@@ -169,7 +169,7 @@ Five bytes total. Structural paragraph indent/style marker. Emits nothing. The d
 | `0x20`+ | Bibliography/reference paragraph style code | Consume silently — these are style identifiers, not indent amounts |
 | `0x00` | No indent | Consume silently |
 
-Every XX ≥ `0x20` occurrence across real sample files (HENCOTES, BUILDNGS, BINDINDX.HEX) is followed by a book or reference title, confirming the style-code interpretation. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
+Every XX ≥ `0x20` occurrence across real sample files (HENCOTES, BUILDNGS, BINDINDX.HEX) is followed by a book or reference title (which should be rendered in italic), confirming the style-code interpretation. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
 
 ### ENQ Extended Character — `05 base 01 diacritic 01`
 A five-byte sequence encoding an accented or extended character:
@@ -197,10 +197,11 @@ Two-byte sequences that toggle inline character formatting. The second byte iden
 |-------------|--------|
 | `00` | Bold |
 | `02` | Underline |
+| `05` | Italic |
 | `06` | Superscript |
 | `07` | Subscript |
 
-`08 05` and `09 05` are not formatting toggles — they are handled separately as paragraph indent and tab markers respectively.
+Bare `08 05` / `09 05` (not followed by `01`) use this table. The 5-byte `08 05 01 XX XX` and `09 05 01 XX XX` forms are handled separately — see *Italic On + Paragraph Indent* and *Italic Off* below — and also carry paragraph indent metadata.
 
 After the two-byte sequence, any non-printable parameter bytes are consumed (excluding `02` word separators, `06` hyphen/space, and `13` formatting prefixes). Bold-on (`08 00`) and superscript-off (`09 06`) are followed by `01 XX XX` where `XX XX` is a doubled-pair indent marker; these are also consumed.
 

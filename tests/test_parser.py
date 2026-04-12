@@ -245,16 +245,67 @@ class TestItalic(unittest.TestCase):
         text = _plain(data)
         self.assertIn('\n', text)
 
+    def test_08_05_01_turns_italic_on(self):
+        # 08 05 01 XX XX (5-byte form) turns italic on
+        data = _doc(b'\x08\x05\x01\x20\x20italic\x13\x04\x50')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        italic_runs = [r for r in runs if r.italic]
+        self.assertTrue(any('italic' in r.text for r in italic_runs))
+
+    def test_09_05_01_turns_italic_off(self):
+        # 08 05 01 XX XX italic on; 09 05 01 XX XX italic off — text after is plain
+        data = _doc(b'\x08\x05\x01\x20\x20italic\x09\x05\x01\x1c\x1cplain')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        plain_runs = [r for r in runs if not r.italic]
+        self.assertTrue(any('plain' in r.text for r in plain_runs))
+
+    def test_09_05_01_no_spurious_tab(self):
+        # 09 05 01 must not emit a tab character
+        data = _doc(b'before\x09\x05\x01\x1c\x1cafter')
+        text = _plain(data)
+        self.assertNotIn('\t', text)
+        self.assertIn('before', text)
+        self.assertIn('after', text)
+
+    def test_08_05_bare_form_turns_italic_on(self):
+        # Bare 08 05 (no 01 suffix) also turns italic on via _FMT_TYPES[0x05]
+        data = _doc(b'\x08\x05italic\x09\x05plain')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        italic_runs = [r for r in runs if r.italic]
+        plain_runs = [r for r in runs if not r.italic]
+        self.assertTrue(any('italic' in r.text for r in italic_runs))
+        self.assertTrue(any('plain' in r.text for r in plain_runs))
+
+    def test_bibliography_title_italic_with_indent_no_tab(self):
+        # 08 05 01 XX XX before title, 09 05 01 XX XX after — title italic, no spurious tab
+        # Mirrors HENCOTES "The Place Names of Hexham Region" scenario
+        data = _doc(b'\x08\x05\x01\x20\x20Title\x09\x05\x01\x1c\x1c,\x02Author')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        italic_runs = [r for r in runs if r.italic]
+        text = _plain(data)
+        self.assertTrue(any('Title' in r.text for r in italic_runs))
+        self.assertNotIn('\t', text)
+        self.assertIn('Title', text)
+        self.assertIn(',', text)
+        self.assertIn('Author', text)
+
 
 class TestTabSequence(unittest.TestCase):
 
-    def test_tab_sequence_emits_tab(self):
-        # 09 05 01 + 2 param bytes → tab character
-        data = _doc(b'Col1\x09\x05\x01\x00\x00Col2')
-        text = _plain(data)
-        self.assertIn('\t', text)
-        self.assertIn('Col1', text)
-        self.assertIn('Col2', text)
+    def test_09_05_01_turns_italic_off_not_tab(self):
+        # 09 05 01 is now italic-off, not a tab sequence — no tab emitted
+        data = _doc(b'\x08\x05\x01\x20\x20italic\x09\x05\x01\x1c\x1cplain')
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        self.assertFalse(any('\t' in r.text for r in runs))
+        italic_runs = [r for r in runs if r.italic]
+        plain_runs = [r for r in runs if not r.italic]
+        self.assertTrue(any('italic' in r.text for r in italic_runs))
+        self.assertTrue(any('plain' in r.text for r in plain_runs))
 
 
 class TestSISequences(unittest.TestCase):
@@ -289,15 +340,15 @@ class TestSISequences(unittest.TestCase):
 class TestTabStopPositions(unittest.TestCase):
     """Tab stop column positions are captured from inline sequences."""
 
-    def test_09_05_01_records_tab_stop_twips(self):
-        # 09 05 01 1c 1c → XX=0x1c=28 at default scale pitch 0x18 → 28×144=4032 twips
+    def test_09_05_01_does_not_record_tab_stop(self):
+        # 09 05 01 is now italic-off — no tab stop should be recorded
         data = _doc(b'Text\x09\x05\x01\x1c\x1cMore')
         doc = parse(data)
         para = doc.paragraphs[0]
-        self.assertIn(4032, para.tab_stops)
+        self.assertEqual(para.tab_stops, [])
 
-    def test_09_05_01_zero_param_no_stop_recorded(self):
-        # XX=0x00 means no position → tab_stops must stay empty
+    def test_09_05_01_no_stop_regardless_of_value(self):
+        # 09 05 01 XX XX is italic-off regardless of XX; tab_stops stays empty
         data = _doc(b'Col1\x09\x05\x01\x00\x00Col2')
         doc = parse(data)
         para = doc.paragraphs[0]
@@ -313,29 +364,32 @@ class TestTabStopPositions(unittest.TestCase):
         self.assertIn(0x27 * 144, para.tab_stops)  # 39×144=5616
 
     def test_multiple_tab_stops_per_paragraph(self):
-        # Two 09 05 01 sequences in one paragraph record two stops
-        data = _doc(b'A\x09\x05\x01\x10\x10B\x09\x05\x01\x20\x20C')
+        # Two 0f 04 sequences in one paragraph record two stops
+        # 0f 04 20 61 → B1=0x20=32, stop at 32×144=4608
+        # 0f 04 30 61 → B1=0x30=48, stop at 48×144=6912
+        data = _doc(b'A\x0f\x04\x20\x61B\x0f\x04\x30\x61C')
         doc = parse(data)
         para = doc.paragraphs[0]
-        self.assertIn(0x10 * 144, para.tab_stops)  # 16×144=2304
         self.assertIn(0x20 * 144, para.tab_stops)  # 32×144=4608
+        self.assertIn(0x30 * 144, para.tab_stops)  # 48×144=6912
 
     def test_tab_stops_not_shared_between_paragraphs(self):
         # Tab stops on one paragraph must not bleed into the next
         data = _doc(
-            b'A\x09\x05\x01\x1c\x1cB'
+            b'A\x0f\x04\x27\x61B'
             b'\x13\x04\x50'                         # paragraph break
-            b'C\x09\x05\x01\x00\x00D'
+            b'CD'                                    # no tab sequence — no tab stops
         )
         doc = parse(data)
-        self.assertIn(4032, doc.paragraphs[0].tab_stops)
+        self.assertIn(0x27 * 144, doc.paragraphs[0].tab_stops)
         self.assertEqual(doc.paragraphs[1].tab_stops, [])
 
     def test_rtf_emits_tx_for_tab_stop(self):
         from converter import to_rtf
-        data = _doc(b'Text\x09\x05\x01\x1c\x1cMore')
+        # 0f 04 27 61 → B1=0x27=39, stop at 39×144=5616 twips
+        data = _doc(b'Text\x0f\x04\x27\x61More')
         out = to_rtf(parse(data))
-        self.assertIn(r'\tx4032', out)
+        self.assertIn(r'\tx5616', out)
 
     def test_rtf_no_tx_when_no_tab_stops(self):
         from converter import to_rtf
@@ -345,24 +399,24 @@ class TestTabStopPositions(unittest.TestCase):
 
     def test_rtf_tx_appears_before_content(self):
         from converter import to_rtf
-        data = _doc(b'Col1\x09\x05\x01\x1c\x1cCol2')
+        data = _doc(b'Col1\x0f\x04\x27\x61Col2')
         out = to_rtf(parse(data))
-        self.assertLess(out.index(r'\tx4032'), out.index('Col1'))
+        self.assertLess(out.index(r'\tx5616'), out.index('Col1'))
 
     def test_docx_tab_stop_written_to_xml(self):
         import tempfile, os
         from pathlib import Path
         from converter import save_docx
         from docx import Document as DocxDocument
-        data = _doc(b'Col1\x09\x05\x01\x1c\x1cCol2')
+        # 0f 04 27 61 → B1=0x27=39, stop at 39×144=5616 twips
+        data = _doc(b'Col1\x0f\x04\x27\x61Col2')
         with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
             tmp = Path(f.name)
         try:
             save_docx(parse(data), tmp)
             result = DocxDocument(tmp)
-            # Check the XML of the first paragraph for a w:tab element with w:pos="4032"
             para_xml = result.paragraphs[0]._p.xml
-            self.assertIn('w:pos="4032"', para_xml)
+            self.assertIn('w:pos="5616"', para_xml)
         finally:
             os.unlink(tmp)
 
@@ -563,13 +617,13 @@ class TestConverterTabHandling(unittest.TestCase):
 
     def _parse_tab_doc(self):
         # Paragraph: "Col1" TAB "Col2"
-        # 09 05 01 00 00 = tab sequence; 13 04 50 = paragraph break
-        data = _doc(b'Col1\x09\x05\x01\x00\x00Col2\x13\x04\x50')
+        # 0f 04 27 61 = tab (B1=0x27, B2=ctrl_byte 0x61); 13 04 50 = paragraph break
+        data = _doc(b'Col1\x0f\x04\x27\x61Col2\x13\x04\x50')
         return parse(data)
 
     def test_txt_preserves_leading_tab(self):
         # A paragraph whose first token is a tab must not be stripped
-        data = _doc(b'\x09\x05\x01\x00\x00Col1\x02Col2\x13\x04\x50')
+        data = _doc(b'\x0f\x04\x27\x61Col1\x02Col2\x13\x04\x50')
         from converter import to_txt
         out = to_txt(parse(data))
         self.assertTrue(out.startswith('\t'), f"Expected leading tab, got: {out!r}")
