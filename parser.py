@@ -19,8 +19,10 @@ SECTION_BREAK_TYPES = (0x01, 0x02)          # valid second bytes: 0e 01 and 0e 0
 PARA_CTRL = bytes([0x22, 0x61, 0x0b])
 
 # Inline formatting: second byte of 08 XX (on) / 09 XX (off) sequences.
-# 08 05 and 09 05 are handled separately as PARA_INDENT / TAB_SEQ.
-_FMT_TYPES = {0x00: 'bold', 0x02: 'underline', 0x06: 'superscript', 0x07: 'subscript'}
+# The 5-byte 08 05 01 XX XX and 09 05 01 XX XX forms are handled by the PARA_INDENT /
+# TAB_SEQ handlers (which also toggle italic ON/OFF).  Bare 08 05 / 09 05 (no 01 suffix)
+# fall through to here via _FMT_TYPES[0x05].
+_FMT_TYPES = {0x00: 'bold', 0x02: 'underline', 0x05: 'italic', 0x06: 'superscript', 0x07: 'subscript'}
 
 # Header section-header block: always structural, never body text.
 # Its presence within 300 bytes of the first PARA_CTRL means we are still
@@ -609,29 +611,30 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 i += 4
             continue
 
-        # --- Tab sequence: 09 05 01 + 2 param bytes ---
-        # The first param byte (XX) encodes the explicit tab column in scale
-        # pitch units (XX × twips_per_unit gives the RTF \tx position).
-        # A zero value means no position is specified; skip silently.
+        # --- Italic off: 09 05 01 + 2 param bytes ---
+        # Consistent with the 09 XX (off) formatting pattern; 0x05 = italic.
+        # The two trailing param bytes are consumed to prevent them leaking as artefacts.
         if data[i:i+3] == TAB_SEQ:
-            flush_run()
-            xx = data[i + 3] if i + 3 < n else 0
-            if xx > 0:
-                current_para.tab_stops.append(xx * _twips_per_unit)
-            current_text.append('\t')
-            i += 5  # 09 05 01 + 2 indent/param bytes
+            if ''.join(current_text).strip():
+                flush_run()
+            italic = False
+            i += 5  # 09 05 01 + 2 param bytes
             continue
 
-        # --- Paragraph indent marker: 08 05 01 + 2 param bytes ---
-        # The doubled-pair value XX encodes one of two things depending on its range:
+        # --- Italic on + paragraph indent: 08 05 01 + 2 param bytes ---
+        # Consistent with the 08 XX (on) formatting pattern; 0x05 = italic.
+        # The doubled-pair value XX also encodes paragraph indent in two ranges:
         #   XX < 0x20: genuine left indent in scale-pitch units → XX × _twips_per_unit
         #   XX ≥ 0x20: bibliography/reference paragraph style code — consume silently
         # (Values ≥ 0x20 are printable ASCII style identifiers, not indent amounts.)
         if data[i:i+3] == PARA_INDENT:
+            if ''.join(current_text).strip():
+                flush_run()
+            italic = True
             xx = data[i + 3] if i + 3 < n else 0
             if xx < 0x20 and xx > 0 and data[i + 3] == data[i + 4]:
                 current_para.left_indent = xx * _twips_per_unit
-            i += 5  # 08 05 01 + 2 indent/param bytes
+            i += 5  # 08 05 01 + 2 param bytes
             continue
 
         # --- SI tab / hanging-indent sequences: 0f 04 (tab) and 0f 05 (hanging indent) ---
@@ -696,8 +699,9 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             continue
 
         # --- Inline formatting: 08 XX (on) / 09 XX (off) ---
-        # bold (00), underline (02), superscript (06), subscript (07).
-        # 08 05 / 09 05 are already handled above as PARA_INDENT / TAB_SEQ.
+        # bold (00), italic (05 bare form), underline (02), superscript (06), subscript (07).
+        # The 5-byte 08 05 01 XX XX and 09 05 01 XX XX forms are handled above by
+        # PARA_INDENT / TAB_SEQ; bare 08 05 / 09 05 fall through to here.
         # Params: optional non-printable bytes then optional doubled-pair indent.
         if data[i] in (0x08, 0x09) and i+1 < n and data[i+1] in _FMT_TYPES:
             fmt = _FMT_TYPES[data[i+1]]
@@ -709,6 +713,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 flush_run()
             if fmt == 'bold':
                 bold = turning_on
+            elif fmt == 'italic':
+                italic = turning_on
             elif fmt == 'underline':
                 underline = turning_on
             elif fmt == 'superscript':
