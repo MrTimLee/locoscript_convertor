@@ -267,7 +267,7 @@ When the break is a genuine paragraph boundary (not mid-sentence), the following
 |--------|--------|
 | TXT | `--- page break ---` separator before the paragraph |
 | RTF | `\page` control word prepended to the paragraph's `\pard` line |
-| DOCX | `WD_BREAK.PAGE` run inserted as the first run of the paragraph |
+| DOCX | `<w:pageBreakBefore/>` in `<w:pPr>` (paragraph property, not an inline run break) |
 
 ### Hyphen / Extra Space — `06`
 Contextual byte with three behaviours:

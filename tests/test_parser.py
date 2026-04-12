@@ -2187,9 +2187,9 @@ class TestPageBreakPropagation(unittest.TestCase):
 
     # --- DOCX ---
 
-    def test_docx_emits_page_break_run(self):
-        """DOCX output should include a w:lastRenderedPageBreak or w:br PAGE element."""
-        import tempfile, zipfile, os
+    def test_docx_emits_page_break_before(self):
+        """DOCX output should use w:pageBreakBefore paragraph property (not inline run)."""
+        import tempfile, zipfile
         from pathlib import Path
         data = self._make_page_break_doc(
             b'first' + bytes([0x13, 0x04, 0x78, 0x00]),
@@ -2202,8 +2202,11 @@ class TestPageBreakPropagation(unittest.TestCase):
             save_docx(doc, dest)
             with zipfile.ZipFile(dest) as z:
                 xml = z.read('word/document.xml').decode('utf-8')
-        # python-docx emits WD_BREAK.PAGE as <w:br w:type="page"/>
-        self.assertIn('w:type="page"', xml)
+        # Page break must be a paragraph property, not an inline run break.
+        # <w:pageBreakBefore/> in <w:pPr> avoids the blank-page bug caused by
+        # inline breaks in center-aligned paragraphs.
+        self.assertIn('pageBreakBefore', xml)
+        self.assertNotIn('w:type="page"', xml)
 
     # --- 1e variant 07 03 block-header page breaks ---
 

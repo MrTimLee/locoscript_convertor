@@ -136,7 +136,7 @@ def save_docx(doc: Document, dest: Path) -> None:
     try:
         from docx import Document as DocxDocument
         from docx.shared import Pt, Twips
-        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml.ns import qn
         from docx.oxml import OxmlElement
     except ImportError as e:
@@ -168,7 +168,7 @@ def save_docx(doc: Document, dest: Path) -> None:
     def _add_para(container, para):
         p = container.add_paragraph()
         if para.page_break_before:
-            p.add_run().add_break(WD_BREAK.PAGE)
+            p.paragraph_format.page_break_before = True
         if para.alignment in _docx_align:
             p.alignment = _docx_align[para.alignment]
         if para.left_indent:
