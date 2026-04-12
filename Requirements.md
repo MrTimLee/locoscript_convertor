@@ -148,14 +148,29 @@ Extended characters that require more than one byte are encoded using the ENQ se
 ### Word Separator — `02`
 A single byte `02` represents an inter-word space. Words within a run are separated by this rather than a literal `0x20` space byte.
 
-### Paragraph Break — `13 04 50`
-Three-byte sequence marking the end of a paragraph. May be followed by optional trailing indent metadata (see below). Starts a new paragraph in the output.
+### Font Size — `13 04 xx`
+Three-byte inline font-size command. The third byte encodes the point size × 10:
 
-### Italic On — `13 04 64`
-Three-byte sequence that begins an italic text run. Italic state is tracked and applied to subsequent `TextRun` objects until italic is turned off.
+| Byte | Value | Point size |
+|------|-------|-----------|
+| `50` | 80    | 8 pt       |
+| `64` | 100   | 10 pt      |
+| `78` | 120   | 12 pt      |
+| `8c` | 140   | 14 pt      |
 
-### Line Break / Italic Off — `13 04 78`
-Three-byte sequence. If italic is currently active it acts as "italic off" (end of italic run). If italic is not active it emits a hard line break (`\n`) within the current paragraph.
+The command is purely inline — it carries no structural meaning and does not break paragraphs. The new font size applies to subsequent `TextRun` objects within the current paragraph. May be followed by optional trailing metadata (see below).
+
+RTF output wraps the affected run in an RTF group `{\fsN ...}` so the size change is scoped to that run only. DOCX output sets `run.font.size = Pt(size)` on each affected run.
+
+### Paragraph Break / Line Break — `0f 02` / `0f 01` + `PP ctrl 0b` block
+`0f` (SI, Shift In) followed by a sub-type byte and a `PP ctrl 0b` block anchor marks paragraph and line boundaries in all file variants:
+
+| Pattern | Meaning |
+|---------|---------|
+| `0f 02 PP ctrl 0b [...]` | Paragraph boundary — flush current paragraph, start new one |
+| `0f 01 PP ctrl 0b [...]` | Soft return within paragraph — emit `\n`, same paragraph continues in next block |
+
+The check `data[i+2] == prefix_byte and data[i+3] == ctrl_byte` guards against false positives inside binary block headers. `0f` bytes not followed by `01`/`02` + a valid block anchor (e.g. `0f 00`, `0f 0f`) fall through to non-printable handling and are ignored.
 
 ### Italic Off — `09 05 01` + 2 param bytes
 Five bytes total. Turns italic off (consistent with the `09 XX` off pattern, second byte `0x05` = italic). The two trailing param bytes are consumed to prevent them leaking as artefacts. No tab character is emitted. Tab stop positions from paragraph indentation use `0f 04` sequences instead.
@@ -219,18 +234,9 @@ Both bytes are consumed as a unit; the second byte is a parameter and does not p
 
 RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOCX output sets `paragraph.alignment` to `WD_ALIGN_PARAGRAPH.CENTER` or `WD_ALIGN_PARAGRAPH.RIGHT`.
 
-### Contents Page Separators — `0f 01` / `0f 02` (non-`22 61` files only)
+### SI Tab / Hanging Indent preamble
 
-In `22 6d` and `1e 74` variant files, paragraph separators use `0f 01` and `0f 02` immediately preceding a `PP ctrl 0b` paragraph block, rather than `13 04 50`:
-
-| Pattern | Meaning |
-|---------|---------|
-| `0f 02 PP ctrl 0b [...]` | Paragraph boundary — flush current paragraph, start new one |
-| `0f 01 PP ctrl 0b [...]` | Line break within paragraph |
-
-These handlers only fire when `ctrl_byte != 0x61` (i.e., non-standard variants). In standard `22 61` files the same byte patterns have different semantics and are handled by existing logic.
-
-Each Contents Page entry is followed by a `0f 04 27 6d 01 XX XX` left-indent tab stop (the `27 6d` bytes encode the column position and ctrl_byte delimiter). The `22 ctrl 0b` block immediately after `0f 01`/`0f 02` may have B6=`0f` B7=`04` or B7=`0f` in its tail — both are left for the main loop's `0f 04` handler by using a shortened skip (6 or 7 bytes respectively).
+Each Contents Page entry (in `22 6d` and `1e 74` variant files) is followed by a `0f 04 27 6d 01 XX XX` left-indent tab stop (the `27 6d` bytes encode the column position and ctrl_byte delimiter). The `22 ctrl 0b` block immediately after `0f 01`/`0f 02` may have B6=`0f` B7=`04` or B7=`0f` in its tail — both are left for the main loop's `0f 04` handler by using a shortened skip (6 or 7 bytes respectively).
 
 ### SI Tab / Hanging Indent — `0f 04` (tab) / `0f 05` (hanging indent)
 Two-byte prefix followed by optional parameter bytes:
@@ -258,7 +264,7 @@ Whether the break creates a paragraph boundary depends on what precedes the `0e`
 | Byte before `0e` | Meaning | Action |
 |-----------------|---------|--------|
 | `0x02` (word separator) or printable (`0x20`–`0x7e`) | Break is mid-sentence — layout/column switch only | Skip layout block; **do not flush paragraph** |
-| Any other byte (e.g. follows `13 04 78` line break) | Break follows a genuine paragraph end | Flush paragraph, then skip layout block |
+| Any other byte (e.g. follows `0f 02` paragraph break or `13 04 xx` font-size change) | Break follows a genuine paragraph end | Flush paragraph, then skip layout block |
 
 This distinction only applies within the body (`i >= body_start`). Section breaks in the pre-body zone (between header, footer, and body sections) always flush the paragraph unconditionally.
 
@@ -322,7 +328,7 @@ This is the most important control type. It marks the start of a new paragraph's
           3 param    2 indent
 ```
 
-If B5=`13` and B6=`04` (a `13 04` formatting prefix embedded in the param bytes), the skip is shortened to 5 bytes, leaving `13 04 XX` for the main loop to handle as italic-on (`64`), italic-off/line-break (`78`), or paragraph break (`50`).
+If B5=`13` and B6=`04` (a `13 04` font-size prefix embedded in the param bytes), the skip is shortened to 5 bytes, leaving `13 04 XX` for the main loop to handle as an inline font-size change.
 
 Several structural variants exist:
 
@@ -339,7 +345,7 @@ Several structural variants exist:
 | `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
 | (default) | Standard 8-byte block | Skip 8 bytes |
 
-**MEMORIAL-style paragraph breaks (body only):** In some documents (e.g. `MEMORIAL.002`) paragraphs are delimited by `22 XX 0b` block pairs rather than `13 04 50`. The distinctive signature is `B3 = 0xe8` and `B4 = 0x05` — when this appears in the body the parser flushes the current paragraph. A page-break variant adds `B5 = 0x07`, which also triggers a jump past the binary layout block that follows.
+**MEMORIAL-style paragraph breaks (body only):** In some documents (e.g. `MEMORIAL.002`) paragraphs are delimited by `22 XX 0b` block pairs rather than `0f 02 PP ctrl 0b`. The distinctive signature is `B3 = 0xe8` and `B4 = 0x05` — when this appears in the body the parser flushes the current paragraph. A page-break variant adds `B5 = 0x07`, which also triggers a jump past the binary layout block that follows.
 
 ### Other Control Types
 All other control types (`0c`, `0d`, `36`, etc.) follow a variable-length structure: skip the 2-byte prefix + type byte + 1 extra parameter byte (4 bytes total), then consume any additional non-printable parameter bytes (excluding `02` word separators and `13` which may begin a formatting sequence), then skip any doubled-pair indent markers.
@@ -354,7 +360,7 @@ After many control sequences a 4-byte metadata suffix appears:
 00 01 XX XX    (where XX == XX and XX > 0)
 ```
 
-The two identical bytes are a doubled-pair indent marker encoding the paragraph's left margin. This suffix is consumed after: `13 04 50` (paragraph break), `13 04 64` (italic on), `13 04 78` (line break/italic off), and after any `22 61` control sequence skip.
+The two identical bytes are a doubled-pair indent marker encoding the paragraph's left margin. This suffix is consumed after any `13 04 xx` font-size command and after any `22 61` control sequence skip.
 
 The threshold is `XX > 0` (not `XX >= 0x20`). Values below `0x20` (e.g. `0x0e = 14`) are valid indent amounts in all file variants and must be consumed to prevent the following bytes from being misinterpreted as control codes. The original `>= 0x20` threshold caused `00 01 0e 0e 0e 02` to leave `0e 02` visible to the section-break handler (confirmed in BUILDNGS.H). Using `> 0` also correctly consumes low-value pairs in `1e 74` variant files (e.g. `00 01 06 06`), avoiding spurious content artifacts.
 
@@ -368,7 +374,7 @@ Throughout the format, indent and margin values are encoded as a pair of identic
 [DOC header — page layout, section metadata]
 22 61 0b ...   ← first paragraph content block (content start anchor)
 [text bytes, 02 separators, 13 04 xx formatting codes]
-13 04 50 ...   ← paragraph break
+0f 02 22 61 0b ...   ← paragraph break
 22 61 0b ...   ← next paragraph content block
 ...
 0e 01 / 0e 02  ← section/page break + binary layout block
