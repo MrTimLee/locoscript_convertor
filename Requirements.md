@@ -178,16 +178,10 @@ The check `data[i+2] == prefix_byte and data[i+3] == ctrl_byte` guards against f
 ### Italic Off — `09 05 01` + 2 param bytes
 Five bytes total. Turns italic off (consistent with the `09 XX` off pattern, second byte `0x05` = italic). The two trailing param bytes are consumed to prevent them leaking as artefacts. No tab character is emitted. Tab stop positions from paragraph indentation use `0f 04` sequences instead.
 
-### Italic On + Paragraph Indent — `08 05 01` + 2 param bytes
-Five bytes total. Turns italic on (consistent with the `08 XX` on pattern, second byte `0x05` = italic) and optionally sets the paragraph's left indent. The doubled-pair value XX (where `data[i+3] == data[i+4]`) encodes one of two things:
+### Italic On — `08 05 01` + 2 byte-count hint bytes
+Five bytes total. Turns italic on (consistent with the `08 XX` on pattern, second byte `0x05` = italic). The two trailing bytes `XX XX` are a **LocoScript screen-layout hint** encoding the byte count of the following italic text segment (e.g. `XX = 0x0a` for "Hex. Cour." which is 10 bytes, `XX = 0x11` for "Kelly's Directory" which is 17 bytes). They carry no indent semantics and are consumed silently in all cases. Without this handler the two trailing bytes (which are often printable) leak into the output as doubled-pair artefacts.
 
-| XX range | Meaning | Action |
-|----------|---------|--------|
-| `0x01`–`0x1F` | Left indent in scale pitch units | Set `para.left_indent = XX × twips_per_unit` |
-| `0x20`+ | Bibliography/reference paragraph style code | Consume silently — these are style identifiers, not indent amounts |
-| `0x00` | No indent | Consume silently |
-
-Every XX ≥ `0x20` occurrence across real sample files (HENCOTES, BUILDNGS, BINDINDX.HEX) is followed by a book or reference title (which should be rendered in italic), confirming the style-code interpretation. Without this handler the two trailing param bytes (which are often printable) leak into the output as doubled-pair artefacts.
+The pairing rule `09 05 01 YY YY` (italic off) works identically — YY is the byte count of the following non-italic text segment. Both confirmed exhaustively against HENCOTES (see `Indent Investigation.md`).
 
 ### ENQ Extended Character — `05 base 01 diacritic 01`
 A five-byte sequence encoding an accented or extended character:
@@ -219,7 +213,7 @@ Two-byte sequences that toggle inline character formatting. The second byte iden
 | `06` | Superscript |
 | `07` | Subscript |
 
-Bare `08 05` / `09 05` (not followed by `01`) use this table. The 5-byte `08 05 01 XX XX` and `09 05 01 XX XX` forms are handled separately — see *Italic On + Paragraph Indent* and *Italic Off* below — and also carry paragraph indent metadata.
+Bare `08 05` / `09 05` (not followed by `01`) use this table. The 5-byte `08 05 01 XX XX` and `09 05 01 XX XX` forms are handled separately — see *Italic On* and *Italic Off* below — and carry a byte-count layout hint in the two trailing bytes.
 
 After the two-byte sequence, any non-printable parameter bytes are consumed (excluding `02` word separators, `06` hyphen/space, and `13` formatting prefixes). Bold-on (`08 00`) and superscript-off (`09 06`) are followed by `01 XX XX` where `XX XX` is a doubled-pair indent marker; these are also consumed.
 

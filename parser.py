@@ -603,20 +603,17 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             i += 5  # 09 05 01 + 2 param bytes
             continue
 
-        # --- Italic on + paragraph indent: 08 05 01 + 2 param bytes ---
+        # --- Italic on: 08 05 01 + 2 byte-count hint bytes ---
         # Consistent with the 08 XX (on) formatting pattern; 0x05 = italic.
-        # The doubled-pair value XX also encodes paragraph indent in two ranges:
-        #   XX < 0x20: genuine left indent in scale-pitch units → XX × _twips_per_unit
-        #   XX ≥ 0x20: bibliography/reference paragraph style code — consume silently
-        # (Values ≥ 0x20 are printable ASCII style identifiers, not indent amounts.)
+        # The two trailing bytes XX XX are a LocoScript screen-layout hint encoding
+        # the byte count of the following italic text segment (e.g. XX=0x0a for
+        # "Hex. Cour." which is 10 bytes).  They carry no indent semantics and are
+        # consumed silently.
         if data[i:i+3] == PARA_INDENT:
             if ''.join(current_text).strip():
                 flush_run()
             italic = True
-            xx = data[i + 3] if i + 3 < n else 0
-            if xx < 0x20 and xx > 0 and data[i + 3] == data[i + 4]:
-                current_para.left_indent = xx * _twips_per_unit
-            i += 5  # 08 05 01 + 2 param bytes
+            i += 5  # 08 05 01 + 2 byte-count hint bytes
             continue
 
         # --- SI tab / hanging-indent sequences: 0f 04 (tab) and 0f 05 (hanging indent) ---
