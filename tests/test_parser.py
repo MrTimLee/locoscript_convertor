@@ -1666,74 +1666,51 @@ class Test1eStructuralSkipGuard(unittest.TestCase):
 
 
 class TestParaIndent(unittest.TestCase):
-    """Tests for PARA_INDENT (08 05 01 XX XX) left_indent and bibliography style codes."""
-
-    # Default _twips_per_unit for synthetic docs (scale_pitch 0x18 × 6 = 144)
-    TWU = 0x18 * 6  # 144
+    """Tests for PARA_INDENT (08 05 01 XX XX) — italic toggle, no indent side-effects."""
 
     def _doc_with_indent(self, xx: int) -> bytes:
         """Build a one-paragraph doc with a PARA_INDENT byte of XX (doubled)."""
         indent_seq = bytes([0x08, 0x05, 0x01, xx, xx])
         return _doc(indent_seq + b'Hello\x13\x04\x50')
 
-    def test_para_indent_below_0x20_sets_left_indent(self):
-        """XX = 0x0a (< 0x20) must set left_indent = 0x0a × 144 = 1440."""
+    def test_para_indent_below_0x20_does_not_set_left_indent(self):
+        """XX = 0x0a (< 0x20) is a byte-count hint — left_indent must stay 0."""
         doc = parse(self._doc_with_indent(0x0a))
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
-        self.assertEqual(paras[0].left_indent, 0x0a * self.TWU)
+        self.assertEqual(paras[0].left_indent, 0)
 
-    def test_para_indent_at_0x20_not_an_indent(self):
-        """XX = 0x20 (>= 0x20) is a bibliography style code — left_indent must stay 0."""
+    def test_para_indent_at_0x20_does_not_set_left_indent(self):
+        """XX = 0x20 is also a byte-count hint — left_indent must stay 0."""
         doc = parse(self._doc_with_indent(0x20))
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 0)
 
-    def test_para_indent_zero_not_set(self):
-        """XX = 0x00 must not set left_indent (zero is not a valid indent)."""
+    def test_para_indent_zero_does_not_set_left_indent(self):
+        """XX = 0x00 — left_indent must stay 0."""
         doc = parse(self._doc_with_indent(0x00))
         paras = [p for p in doc.paragraphs if p.plain_text().strip()]
         self.assertEqual(paras[0].left_indent, 0)
 
     def test_para_indent_not_emitted_as_text(self):
         """The PARA_INDENT sequence bytes must not appear in plain text output."""
-        data = self._doc_with_indent(0x4a)  # 0x4a = 'J', >= 0x20 style code
+        data = self._doc_with_indent(0x4a)  # 0x4a = 'J'
         result = _plain(data)
         self.assertNotIn('J', result)
         self.assertIn('Hello', result)
 
-    def test_rtf_emits_li_for_indented_para(self):
-        """RTF output must contain \\li{twips} when left_indent > 0."""
+    def test_rtf_no_li_from_para_indent(self):
+        """RTF output must not contain \\li from an 08 05 01 XX XX sequence."""
         from converter import to_rtf
         doc = parse(self._doc_with_indent(0x0a))
         rtf = to_rtf(doc)
-        expected = rf'\li{0x0a * self.TWU}'
-        self.assertIn(expected, rtf)
+        self.assertNotIn(r'\li', rtf)
 
-    def test_rtf_no_li_for_unindented_para(self):
-        """RTF output must not contain \\li when left_indent == 0."""
+    def test_rtf_no_li_for_plain_para(self):
+        """RTF output must not contain \\li when no indent is set."""
         from converter import to_rtf
         doc = parse(_doc(b'Hello\x13\x04\x50'))
         rtf = to_rtf(doc)
         self.assertNotIn(r'\li', rtf)
-
-    def test_docx_sets_left_indent(self):
-        """DOCX output must set paragraph_format.left_indent when left_indent > 0."""
-        import tempfile, os
-        from converter import save_docx
-        from docx.shared import Twips
-        doc = parse(self._doc_with_indent(0x0a))
-        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
-            path = f.name
-        try:
-            save_docx(doc, Path(path))
-            from docx import Document as DocxDoc
-            d = DocxDoc(path)
-            body_paras = [p for p in d.paragraphs if p.text.strip()]
-            self.assertGreater(len(body_paras), 0)
-            self.assertEqual(body_paras[0].paragraph_format.left_indent,
-                             Twips(0x0a * self.TWU))
-        finally:
-            os.unlink(path)
 
 
 class TestFontSizeFrom1eVariant(unittest.TestCase):
