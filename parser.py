@@ -57,7 +57,7 @@ class TextRun:
     """A run of plain text with optional inline formatting."""
     def __init__(self, text: str, italic: bool = False, bold: bool = False,
                  underline: bool = False, superscript: bool = False, subscript: bool = False,
-                 font_size: float | None = None):
+                 font_size: float | None = None, page_number: bool = False):
         self.text = text
         self.italic = italic
         self.bold = bold
@@ -65,11 +65,13 @@ class TextRun:
         self.superscript = superscript
         self.subscript = subscript
         self.font_size = font_size  # point size for this run (None = inherit paragraph/doc default)
+        self.page_number = page_number  # True = emit a dynamic page number field, not literal text
 
     def __repr__(self):
         flags = ', '.join(k for k, v in [
             ('italic', self.italic), ('bold', self.bold), ('underline', self.underline),
-            ('superscript', self.superscript), ('subscript', self.subscript)] if v)
+            ('superscript', self.superscript), ('subscript', self.subscript),
+            ('page_number', self.page_number)] if v)
         return f"TextRun({self.text!r}{', ' + flags if flags else ''})"
 
 
@@ -84,7 +86,7 @@ class Paragraph:
         self.page_break_before: bool = False  # True when a page/section break precedes this paragraph
 
     def plain_text(self) -> str:
-        return ''.join(r.text for r in self.runs)
+        return ''.join('[PAGE]' if r.page_number else r.text for r in self.runs)
 
     def __repr__(self):
         return f"Paragraph({self.runs!r})"
@@ -528,7 +530,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     def flush_para():
         nonlocal current_para
         flush_run()
-        if not any(r.text.strip() for r in current_para.runs):
+        if not any(r.text.strip() or r.page_number for r in current_para.runs):
             was_page_break = current_para.page_break_before
             current_para = Paragraph()
             current_para.page_break_before = was_page_break
@@ -758,6 +760,23 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             current_para.page_break_before = True
             next_para = data.find(para_ctrl, i + 2)
             i = next_para if next_para >= 0 else n
+            continue
+
+        # --- Page number token: 07 06 ---
+        # BEL (0x07) followed by ACK (0x06) is the LocoScript 2 current-page-number
+        # token, confirmed in the footer zones of HENCOTES and BREWERS.5.
+        # The token is followed by a SOH-counted display field: 01 N N [N bytes],
+        # where N is the byte count and the N bytes are the on-screen placeholder
+        # LocoScript rendered (e.g. 3d 3d 02 06 = '==' + word-sep + space).
+        # We emit a page_number TextRun (rendered as \chpgn in RTF, a PAGE field
+        # in DOCX, and [PAGE] in TXT) and consume the display bytes.
+        if data[i] == 0x07 and i + 1 < n and data[i + 1] == 0x06:
+            flush_run()
+            current_para.runs.append(TextRun('', font_size=current_font_size, page_number=True))
+            i += 2
+            if i + 2 < n and data[i] == 0x01 and data[i + 1] == data[i + 2]:
+                n_display = data[i + 1]
+                i += 3 + n_display
             continue
 
         # --- Control sequence: PP XX ---

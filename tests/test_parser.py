@@ -2355,5 +2355,65 @@ class TestPageBreakPropagation(unittest.TestCase):
         self.assertFalse(content[1].page_break_before)
 
 
+class TestPageNumberToken(unittest.TestCase):
+    """07 06 = page number token; display bytes consumed; converters emit correct output."""
+
+    def _footer_doc(self, footer_body: bytes) -> bytes:
+        """Wrap bytes in a minimal DOC envelope routed as footer content.
+
+        Structure mirrors the real footer zone: a single 22 61 0b block with
+        initial_section='footer' routing, followed by footer_body, then a
+        body-start block so the parser exits the footer section cleanly.
+        """
+        # Minimal header that routes first block as footer:
+        # DOC + layout section stub at 0x5a0 that returns 'footer' from _section_type_at.
+        # Simpler: use a pre-body NUL terminator (00 00) to end the footer and begin body.
+        para_ctrl = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+        return MAGIC + para_ctrl + footer_body + b'\x00\x00' + para_ctrl
+
+    def test_page_number_run_emitted(self):
+        """07 06 produces a TextRun with page_number=True."""
+        body = b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'
+        data = _doc(body)
+        doc = parse(data)
+        runs = [r for p in doc.paragraphs for r in p.runs]
+        pn_runs = [r for r in runs if r.page_number]
+        self.assertEqual(len(pn_runs), 1)
+
+    def test_display_bytes_not_emitted(self):
+        """3d 3d and other display bytes after 07 06 must not appear in output."""
+        body = b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertNotIn('==', result)
+        self.assertNotIn('=', result)
+
+    def test_plain_text_renders_page_placeholder(self):
+        """plain_text() on a page_number run returns [PAGE]."""
+        body = b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'
+        data = _doc(body)
+        doc = parse(data)
+        all_text = ''.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('[PAGE]', all_text)
+
+    def test_rtf_emits_chpgn(self):
+        """RTF converter emits \\chpgn for a page_number run."""
+        body = b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'
+        data = _doc(body)
+        doc = parse(data)
+        rtf = to_rtf(doc)
+        self.assertIn(r'\chpgn', rtf)
+        self.assertNotIn('==', rtf)
+
+    def test_text_after_token_still_parsed(self):
+        """Content following 07 06 display bytes is parsed normally."""
+        body = (b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'
+                + b'Reference\x02text')
+        data = _doc(body)
+        result = _plain(data)
+        self.assertIn('Reference', result)
+        self.assertIn('text', result)
+
+
 if __name__ == '__main__':
     unittest.main()

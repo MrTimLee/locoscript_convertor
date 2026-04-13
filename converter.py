@@ -58,6 +58,12 @@ def _rtf_escape(text: str) -> str:
 
 def _rtf_run(run: 'TextRun') -> str:
     """Wrap a TextRun's escaped text in RTF formatting codes."""
+    if run.page_number:
+        # \chpgn emits the current page number at print/render time.
+        content = r'\chpgn'
+        if run.font_size is not None:
+            return '{' + rf'\fs{int(run.font_size * 2)} ' + content + '}'
+        return content
     if not run.text.strip():
         return ''
     escaped = _rtf_escape(run.text)
@@ -169,6 +175,32 @@ def save_docx(doc: Document, dest: Path) -> None:
             tabs_el.append(tab)
         pPr.append(tabs_el)
 
+    def _add_page_number_field(p, run):
+        """Insert a PAGE field into paragraph p as three fldChar runs."""
+        from lxml import etree
+        for fld_type in ('begin', 'end'):
+            r_el = OxmlElement('w:r')
+            if run.font_size is not None:
+                rpr = OxmlElement('w:rPr')
+                sz = OxmlElement('w:sz')
+                sz.set(qn('w:val'), str(int(run.font_size * 2)))
+                rpr.append(sz)
+                r_el.append(rpr)
+            fld = OxmlElement('w:fldChar')
+            fld.set(qn('w:fldCharType'), fld_type)
+            r_el.append(fld)
+            if fld_type == 'begin':
+                # Insert instrText run between begin and end
+                p._p.append(r_el)
+                instr_el = OxmlElement('w:r')
+                instr = OxmlElement('w:instrText')
+                instr.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                instr.text = ' PAGE '
+                instr_el.append(instr)
+                p._p.append(instr_el)
+            else:
+                p._p.append(r_el)
+
     def _add_para(container, para):
         p = container.add_paragraph()
         if para.page_break_before:
@@ -179,6 +211,9 @@ def save_docx(doc: Document, dest: Path) -> None:
             p.paragraph_format.left_indent = Twips(para.left_indent)
         _apply_tab_stops(p, para.tab_stops)
         for run in para.runs:
+            if run.page_number:
+                _add_page_number_field(p, run)
+                continue
             if not run.text.strip():
                 continue
             r = p.add_run(run.text)
