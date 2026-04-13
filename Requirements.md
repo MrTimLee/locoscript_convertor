@@ -57,9 +57,12 @@ Largely resolved. `_find_content_start` now iterates through structural section-
 Implemented. Headers and footers are now extracted as separate `Paragraph` objects (`doc.header`, `doc.footer`) and rendered appropriately in all three output formats: TXT uses `---` separators, RTF uses `\header`/`\footer` groups, DOCX populates `section.header`/`section.footer`. Confirmed working on HENCOTES (header + footer) and BUILDNGS.H (footer only).
 
 ### Page number zone in footers
-Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page number zone** followed by a **right-aligned document reference zone**. The page number zone is identified by a `11 06` (centre alignment) code followed by a `3d 3d` doubled-pair marker (`==`) and a page-number token sequence. The document reference zone begins after a `10 07` (right alignment) code and contains the human-authored text (e.g. `CND 4.1,  4 Oct 2018`).
+Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page number zone** followed by a **right-aligned document reference zone**. The page number zone is identified by a `11 06` (centre alignment) code followed by a page-number token sequence. The document reference zone begins after a `10 07` (right alignment) code and contains the human-authored text (e.g. `CND 4.1,  4 Oct 2018`).
 
-The `==` doubled pair in the centre zone is a LocoScript 2 page number placeholder — at print time LocoScript would have expanded it to the actual page number. The surrounding control bytes (`22 61 44`, `13 04 50` etc.) are part of the page number token machinery. Since page numbers cannot be resolved statically, the entire page number zone is silently discarded; only the document reference text is extracted as `doc.footer`. A future enhancement could render the page number zone as a `[PAGE]` placeholder.
+The page number token is `07 06` (BEL + ACK), confirmed across HENCOTES and BREWERS.5. It is followed by a SOH-counted display field: `01 N N [N bytes]`, where the N display bytes are the on-screen placeholder LocoScript rendered (e.g. `3d 3d 02 06` = `==` + word-sep + space). The parser emits a `page_number=True` `TextRun` for the token and consumes the display bytes; converters render this as `\chpgn` (RTF), a `PAGE` field (DOCX), or `[PAGE]` (TXT).
+
+### Footer alignment (known limitation)
+The current data model stores the footer as a single `Paragraph` with one `alignment` value. In LocoScript 2, the footer has two alignment zones in the same line: the page number is centre-aligned (`11 06`) and the document reference is right-aligned (`10 07`). Since both codes apply to the same `Paragraph` object, `right` wins and the page number loses its centre alignment. The correct fix is a tab-stop layout (centre tab at the page midpoint, right tab at the right margin) — but this requires deriving the page width from the file header, which needs further investigation. See `Tasks.md`.
 
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
@@ -219,6 +222,22 @@ Two-byte sequences that toggle inline character formatting. The second byte iden
 Bare `08 05` / `09 05` (not followed by `01`) use this table. The 5-byte `08 05 01 XX XX` and `09 05 01 XX XX` forms are handled separately — see *Italic On + Paragraph Indent* and *Italic Off* below — and also carry paragraph indent metadata.
 
 After the two-byte sequence, any non-printable parameter bytes are consumed (excluding `02` word separators, `06` hyphen/space, and `13` formatting prefixes). Bold-on (`08 00`) and superscript-off (`09 06`) are followed by `01 XX XX` where `XX XX` is a doubled-pair indent marker; these are also consumed.
+
+### Page Number Token — `07 06`
+
+BEL (`0x07`) followed by ACK (`0x06`) is the LocoScript 2 current-page-number token. Confirmed in the footer zones of HENCOTES and BREWERS.5 (the only two files in the sample set with page numbers in their footers).
+
+The token is followed by a SOH-counted display field:
+
+```
+07 06  01 N N  [N bytes]
+```
+
+- `07 06` — page number token
+- `01 N N` — SOH byte + count byte N repeated twice
+- `[N bytes]` — the display content LocoScript rendered on screen (e.g. `3d 3d 02 06` = `==` + word-sep + space, where `==` was the visual placeholder for the page number)
+
+The parser emits a `page_number=True` `TextRun` (with no literal text) and consumes the display bytes. Converters render this as `\chpgn` (RTF), a `PAGE` field (DOCX), or `[PAGE]` (TXT).
 
 ### Paragraph Alignment — `11 06` (centre) / `10 07` or `10 04` (right)
 
