@@ -2332,6 +2332,143 @@ class TestPageBreakPropagation(unittest.TestCase):
         self.assertFalse(content[1].page_break_before)
 
 
+class TestFooterTwoZoneLayout(unittest.TestCase):
+    """10 07 in footer context sets footer_tab=True; converters emit two-zone tab layout."""
+
+    _HENCOTES = Path(__file__).parent.parent / 'HENCOTES'
+
+    def _make_footer_para(self, page_number: bool = True, ref_text: str = 'Ref') -> 'Paragraph':
+        """Directly construct a Paragraph with footer_tab=True for converter tests."""
+        para = Paragraph()
+        para.footer_tab = True
+        if page_number:
+            para.runs.append(TextRun('', page_number=True))
+        if ref_text:
+            para.runs.append(TextRun(ref_text))
+        return para
+
+    def _make_footer_doc(self, page_number: bool = True, ref_text: str = 'Ref') -> 'Document':
+        """Build a Document whose footer has footer_tab=True."""
+        doc = Document()
+        doc.footer = self._make_footer_para(page_number=page_number, ref_text=ref_text)
+        return doc
+
+    # --- Parser tests (use real HENCOTES which has a 10 07 footer) ---
+
+    def test_10_07_in_footer_sets_footer_tab(self):
+        """Parsing HENCOTES sets footer_tab=True on the footer paragraph."""
+        doc = parse(self._HENCOTES.read_bytes())
+        self.assertIsNotNone(doc.footer)
+        self.assertTrue(doc.footer.footer_tab)
+
+    def test_10_07_in_body_does_not_set_footer_tab(self):
+        """10 07 in a body paragraph sets alignment='right', not footer_tab."""
+        data = _doc(b'\x10\x07Hello\x13\x04\x50')
+        doc = parse(data)
+        self.assertFalse(doc.paragraphs[0].footer_tab)
+        self.assertEqual(doc.paragraphs[0].alignment, 'right')
+
+    def test_footer_tab_hencotes_preserves_reference(self):
+        """HENCOTES footer reference text is present when footer_tab is set."""
+        doc = parse(self._HENCOTES.read_bytes())
+        self.assertIsNotNone(doc.footer)
+        self.assertIn('CND 4.1', doc.footer.plain_text())
+
+    # --- RTF converter tests ---
+
+    def test_rtf_footer_tab_uses_centre_right_tab_stops(self):
+        """RTF footer with footer_tab=True must have \\tqc\\tx4513\\tqr\\tx9026."""
+        doc = self._make_footer_doc()
+        rtf = to_rtf(doc)
+        self.assertIn(r'\tqc\tx4513\tqr\tx9026', rtf)
+
+    def test_rtf_footer_tab_contains_chpgn(self):
+        """RTF footer with footer_tab=True must emit \\chpgn for the page number zone."""
+        doc = self._make_footer_doc()
+        rtf = to_rtf(doc)
+        self.assertIn(r'\chpgn', rtf)
+
+    def test_rtf_footer_tab_contains_tab_token(self):
+        """RTF footer with footer_tab=True must have \\tab tokens for zone separation."""
+        doc = self._make_footer_doc()
+        rtf = to_rtf(doc)
+        self.assertIn(r'\tab', rtf)
+
+    def test_rtf_footer_tab_contains_reference_text(self):
+        """RTF footer must include the reference text in zone 2."""
+        doc = self._make_footer_doc(ref_text='CND 4.1')
+        rtf = to_rtf(doc)
+        self.assertIn('CND 4.1', rtf)
+
+    def test_rtf_footer_without_footer_tab_not_affected(self):
+        """A normal (non-footer_tab) paragraph must not get the two-zone tab stops."""
+        doc = self._make_footer_doc()
+        doc.footer.footer_tab = False
+        doc.footer.alignment = 'right'
+        rtf = to_rtf(doc)
+        self.assertNotIn(r'\tqc\tx4513', rtf)
+
+    # --- DOCX converter tests ---
+
+    def test_docx_footer_tab_has_centre_tab_stop(self):
+        """DOCX footer paragraph must have a centre tab stop at position 4513."""
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        doc = self._make_footer_doc()
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(doc, tmp)
+            result = DocxDocument(tmp)
+            # python-docx adds a default empty paragraph; _add_para appends another.
+            # The footer_tab paragraph is always last.
+            footer_para = result.sections[0].footer.paragraphs[-1]
+            xml = footer_para._p.xml
+            self.assertIn('center', xml)
+            self.assertIn('4513', xml)
+        finally:
+            os.unlink(tmp)
+
+    def test_docx_footer_tab_has_right_tab_stop(self):
+        """DOCX footer paragraph must have a right tab stop at position 9026."""
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        doc = self._make_footer_doc()
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(doc, tmp)
+            result = DocxDocument(tmp)
+            footer_para = result.sections[0].footer.paragraphs[-1]
+            xml = footer_para._p.xml
+            self.assertIn('right', xml)
+            self.assertIn('9026', xml)
+        finally:
+            os.unlink(tmp)
+
+    def test_docx_footer_tab_reference_text_present(self):
+        """DOCX footer must include the reference text run."""
+        import tempfile, os
+        from pathlib import Path
+        from converter import save_docx
+        from docx import Document as DocxDocument
+        doc = self._make_footer_doc(ref_text='CND 4.1')
+        with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f:
+            tmp = Path(f.name)
+        try:
+            save_docx(doc, tmp)
+            result = DocxDocument(tmp)
+            footer_text = ''.join(r.text for p in result.sections[0].footer.paragraphs
+                                  for r in p.runs)
+            self.assertIn('CND 4.1', footer_text)
+        finally:
+            os.unlink(tmp)
+
+
 class TestPageNumberToken(unittest.TestCase):
     """07 06 = page number token; display bytes consumed; converters emit correct output."""
 

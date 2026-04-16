@@ -84,6 +84,7 @@ class Paragraph:
         self.left_indent: int = 0        # left indent in twips (0 = none)
         self.font_size: float | None = None  # point size (None = document default)
         self.page_break_before: bool = False  # True when a page/section break precedes this paragraph
+        self.footer_tab: bool = False        # True when footer has centre+right two-zone layout
 
     def plain_text(self) -> str:
         return ''.join('[PAGE]' if r.page_number else r.text for r in self.runs)
@@ -954,7 +955,11 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             i += 2
             continue
         if data[i] == 0x10 and i+1 < n and data[i+1] in (0x07, 0x04):
-            current_para.alignment = 'right'
+            if current_section == 'footer':
+                flush_run()
+                current_para.footer_tab = True
+            else:
+                current_para.alignment = 'right'
             i += 2
             continue
 
