@@ -61,8 +61,11 @@ Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page n
 
 The page number token is `07 06` (BEL + ACK), confirmed across HENCOTES and BREWERS.5. It is followed by a SOH-counted display field: `01 N N [N bytes]`, where the N display bytes are the on-screen placeholder LocoScript rendered (e.g. `3d 3d 02 06` = `==` + word-sep + space). The parser emits a `page_number=True` `TextRun` for the token and consumes the display bytes; converters render this as `\chpgn` (RTF), a `PAGE` field (DOCX), or `[PAGE]` (TXT).
 
-### Footer alignment (known limitation)
-The current data model stores the footer as a single `Paragraph` with one `alignment` value. In LocoScript 2, the footer has two alignment zones in the same line: the page number is centre-aligned (`11 06`) and the document reference is right-aligned (`10 07`). Since both codes apply to the same `Paragraph` object, `right` wins and the page number loses its centre alignment. The correct fix is a tab-stop layout (centre tab at the page midpoint, right tab at the right margin) — but this requires deriving the page width from the file header, which needs further investigation. See `Tasks.md`.
+### Footer two-zone tab layout
+Implemented. The `10 07` (right alignment) code in footer context sets `Paragraph.footer_tab = True` instead of `alignment = 'right'`. Converters render the footer as a two-zone tab-stop layout: a leading tab moves to the centre tab stop (page number zone, rendered with `\chpgn` / PAGE field / `[PAGE]`), then a second tab moves to the right tab stop (document reference zone). Tab positions are hardcoded for A4 with 1-inch margins: centre tab at 4513 twips, right tab at 9026 twips (printable width = 9026 twips).
+
+#### Page margin bytes (known limitation)
+LocoScript 2 files contain page margin bytes at offset `0x2BA`/`0x2BC` in the file header. Their unit system has not been confirmed (values differ between files: HENCOTES=`0x28`, BREWERS.5=`0x30`). The Java reference converter also hardcodes A4 1-inch margins for all files. Until the margin byte encoding is understood, the tab positions above use the hardcoded A4 values. See `Page-Margin-Investigation.md` (local only).
 
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
@@ -175,8 +178,8 @@ RTF output wraps the affected run in an RTF group `{\fsN ...}` so the size chang
 
 The check `data[i+2] == prefix_byte and data[i+3] == ctrl_byte` guards against false positives inside binary block headers. `0f` bytes not followed by `01`/`02` + a valid block anchor (e.g. `0f 00`, `0f 0f`) fall through to non-printable handling and are ignored.
 
-### Italic Off — `09 05 01` + 2 param bytes
-Five bytes total. Turns italic off (consistent with the `09 XX` off pattern, second byte `0x05` = italic). The two trailing param bytes are consumed to prevent them leaking as artefacts. No tab character is emitted. Tab stop positions from paragraph indentation use `0f 04` sequences instead.
+### Italic Off — `09 05 01` + 2 byte-count hint bytes
+Five bytes total. Turns italic off (consistent with the `09 XX` off pattern, second byte `0x05` = italic). The two trailing bytes YY YY are a byte-count layout hint encoding the length of the following non-italic text segment (same convention as the italic-on form — see below). Consumed silently. No tab character is emitted.
 
 ### Italic On — `08 05 01` + 2 byte-count hint bytes
 Five bytes total. Turns italic on (consistent with the `08 XX` on pattern, second byte `0x05` = italic). The two trailing bytes `XX XX` are a **LocoScript screen-layout hint** encoding the byte count of the following italic text segment (e.g. `XX = 0x0a` for "Hex. Cour." which is 10 bytes, `XX = 0x11` for "Kelly's Directory" which is 17 bytes). They carry no indent semantics and are consumed silently in all cases. Without this handler the two trailing bytes (which are often printable) leak into the output as doubled-pair artefacts.

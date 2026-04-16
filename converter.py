@@ -94,11 +94,19 @@ def _rtf_para(para: 'Paragraph') -> str:
     parts = [p for p in parts if p]
     if not parts:
         return ''
-    align = _rtf_align.get(para.alignment, '')
-    tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
     indent = rf'\li{para.left_indent}' if para.left_indent else ''
     font_size = rf'\fs{int(para.font_size * 2)}' if para.font_size is not None else ''
     page_break = r'\page' if para.page_break_before else ''
+    if para.footer_tab:
+        # Two-zone footer: centre tab at page midpoint, right tab at right margin.
+        # Hardcoded for A4 with 1-inch margins: printable width = 9026 twips.
+        # Zone 1 (page number): tabbed to centre. Zone 2 (reference): tabbed to right.
+        zone1 = [_rtf_run(r) for r in para.runs if r.page_number]
+        zone2 = [_rtf_run(r) for r in para.runs if not r.page_number and r.text.strip()]
+        content = r'\tab ' + ' '.join(zone1) + r' \tab ' + ' '.join(zone2)
+        return page_break + r'\pard\tqc\tx4513\tqr\tx9026' + font_size + ' ' + content + r'\par'
+    align = _rtf_align.get(para.alignment, '')
+    tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
     return page_break + r'\pard' + align + indent + tab_stops + font_size + ' ' + ' '.join(parts) + r'\par'
 
 
@@ -175,6 +183,27 @@ def save_docx(doc: Document, dest: Path) -> None:
             tabs_el.append(tab)
         pPr.append(tabs_el)
 
+    def _apply_footer_tab_stops(paragraph) -> None:
+        """Add centre+right tab stops for two-zone footer layout (hardcoded A4 1-inch margins)."""
+        pPr = paragraph._p.get_or_add_pPr()
+        tabs_el = OxmlElement('w:tabs')
+        centre_tab = OxmlElement('w:tab')
+        centre_tab.set(qn('w:val'), 'center')
+        centre_tab.set(qn('w:pos'), '4513')
+        tabs_el.append(centre_tab)
+        right_tab = OxmlElement('w:tab')
+        right_tab.set(qn('w:val'), 'right')
+        right_tab.set(qn('w:pos'), '9026')
+        tabs_el.append(right_tab)
+        pPr.append(tabs_el)
+
+    def _add_tab_run(p) -> None:
+        """Append a bare tab character run to paragraph p."""
+        r_el = OxmlElement('w:r')
+        tab_el = OxmlElement('w:tab')
+        r_el.append(tab_el)
+        p._p.append(r_el)
+
     def _add_page_number_field(p, run):
         """Insert a PAGE field into paragraph p as three fldChar runs."""
         from lxml import etree
@@ -205,11 +234,26 @@ def save_docx(doc: Document, dest: Path) -> None:
         p = container.add_paragraph()
         if para.page_break_before:
             p.paragraph_format.page_break_before = True
-        if para.alignment in _docx_align:
-            p.alignment = _docx_align[para.alignment]
-        if para.left_indent:
-            p.paragraph_format.left_indent = Twips(para.left_indent)
-        _apply_tab_stops(p, para.tab_stops)
+        if para.footer_tab:
+            _apply_footer_tab_stops(p)
+            # Zone 1: leading tab + page number centred; Zone 2: tab + reference right-aligned.
+            _add_tab_run(p)
+            for run in para.runs:
+                if run.page_number:
+                    _add_page_number_field(p, run)
+                elif run.text.strip():
+                    _add_tab_run(p)
+                    r = p.add_run(run.text)
+                    effective_size = run.font_size if run.font_size is not None else para.font_size
+                    if effective_size is not None:
+                        r.font.size = Pt(effective_size)
+            return p
+        else:
+            if para.alignment in _docx_align:
+                p.alignment = _docx_align[para.alignment]
+            if para.left_indent:
+                p.paragraph_format.left_indent = Twips(para.left_indent)
+            _apply_tab_stops(p, para.tab_stops)
         for run in para.runs:
             if run.page_number:
                 _add_page_number_field(p, run)
