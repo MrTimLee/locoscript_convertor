@@ -249,11 +249,13 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int,
     # B) Low-B3 blocks (B3 < 0x80, B3 ≠ 0x00): either pre-body content
     #    (header / footer paragraphs) or the first body paragraph.
     #    Discrimination rule:
-    #      - If a high-B3 block has already been seen → this is the body start
-    #        (we have crossed out of the transition zone).
-    #      - Otherwise → apply the B5 ≠ 0x14 heuristic (pre-body paragraphs
-    #        in standard 22-61 files carry B5 = 0x14; the first body paragraph
-    #        does not).
+    #      - If B5 ≠ 0x14 (without prior high-B3) → body start.
+    #      - If B5 = 0x14 AND a high-B3 block has been seen (we have crossed
+    #        out of the transition zone): use the NUL terminator check.
+    #        Pre-body header/footer zones always end with ``00 00`` before the
+    #        binary layout blob.  If ``00 00`` appears between this candidate
+    #        and the next ``22 ctrl 0b`` block, this is still a pre-body zone
+    #        → skip it.  No ``00 00`` → body start.
     pos = first_para
     seen_high_b3 = False
     while True:
@@ -264,6 +266,20 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int,
                 seen_high_b3 = True
             elif b3 != 0x00:
                 if seen_high_b3 or b5 != 0x14:
+                    # Candidate: verify no NUL terminator before the next block.
+                    # Footer text zones always end with 00 00; body paragraphs
+                    # do not.  This distinguishes footer blocks that have low B3
+                    # (e.g. BREWERS.5 footer B3=0x13) from body blocks that
+                    # also have B5=0x14 (e.g. BREWERS.5 body B3=0x42).
+                    nxt = data.find(para_ctrl, pos + 3)
+                    scan_end = nxt if nxt >= 0 else min(pos + 512, n)
+                    if data.find(b'\x00\x00', pos + 8, scan_end) >= 0:
+                        # NUL terminator found → still pre-body; keep scanning
+                        next_pos = data.find(para_ctrl, pos + 3)
+                        if next_pos < 0:
+                            break
+                        pos = next_pos
+                        continue
                     return pos
         next_pos = data.find(para_ctrl, pos + 3)
         if next_pos < 0:
@@ -857,6 +873,24 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         _is_structural_hdr = (prefix_byte == 0x22 and i + 4 < n
                                               and data[i + 3] >= 0x80 and data[i + 4] == 0x0e)
                         if i + 5 < n and data[i + 5] == 0x07 and not _is_structural_hdr:
+                            flush_run()
+                            flush_para()
+                            current_para.page_break_before = True
+                            next_para = data.find(para_ctrl, i + 3)
+                            i = next_para if next_para >= 0 else n
+                            continue
+                        # Structural page-break block with 07 03 at B5/B6 in
+                        # 22-prefix non-0x61 (i.e. 22 6d / 22 42) body context
+                        # (e.g. "22 6d 0b a6 0e 07 03").  Marks a page break —
+                        # flush any accumulated content and set page_break_before
+                        # on the next paragraph.  The preceding per-page label
+                        # (if any) was already discarded by the 0f 02 lookahead
+                        # handler; this just handles the page-break side.
+                        # Scoped to ctrl_byte != 0x61: standard 22 61 files use
+                        # 0e 01/0e 02 for page breaks and their structural blocks
+                        # (c4 0e 07 03) must NOT trigger a page break here.
+                        if (_is_structural_hdr and ctrl_byte != 0x61 and i + 6 < n
+                                and data[i + 5] == 0x07 and data[i + 6] == 0x03):
                             flush_run()
                             flush_para()
                             current_para.page_break_before = True

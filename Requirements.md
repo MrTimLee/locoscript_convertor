@@ -54,7 +54,12 @@ These are issues that are understood but not yet resolved. They are good candida
 Largely resolved. `_find_content_start` now iterates through structural section-header blocks (`22 XX 0b` with B3 ≥ `0x80` and B4 = `0e`, e.g. `c4 0e` in standard files and `a6 0e` in `22 6d` variant files), jumping across any following section break to find the first real content paragraph. This eliminated header junk in 185 of 443 sample files with no regressions. A small number of documents (e.g. those with mixed control bytes inside the first content block) may still show minor artefacts in para[0], but the body of the document is unaffected.
 
 ## Running header / footer extraction
-Implemented. Headers and footers are now extracted as separate `Paragraph` objects (`doc.header`, `doc.footer`) and rendered appropriately in all three output formats: TXT uses `---` separators, RTF uses `\header`/`\footer` groups, DOCX populates `section.header`/`section.footer`. Confirmed working on HENCOTES (header + footer) and BUILDNGS.H (footer only).
+Implemented. Headers and footers are now extracted as separate `Paragraph` objects (`doc.header`, `doc.footer`) and rendered appropriately in all three output formats: TXT uses `---` separators, RTF uses `\header`/`\footer` groups, DOCX populates `section.header`/`section.footer`. Confirmed working on HENCOTES (header + footer), BUILDNGS.H (footer only), and BREWERS.5 (header + footer in a `22 6d` variant file).
+
+### `22 6d` body_start detection (low-B3 footer blocks)
+In `22 6d` variant files, the footer block can have a **low B3 byte** (e.g. `B3=0x13` in BREWERS.5), unlike the high-B3 structural header blocks (`a6 0e`) that bracket it. The fallback scan in `_find_body_start` previously misidentified this low-B3 footer block as the body start, causing footer content to appear as body text and the real header/footer to be lost.
+
+Fix: when the fallback scan considers a low-B3 candidate (either because a high-B3 block has been seen, or because `B5 ≠ 0x14`), it now checks for a `00 00` NUL terminator between the candidate and the next `22 ctrl 0b` block. Pre-body header/footer zones always end with two NUL bytes before the binary layout blob; body paragraphs never have `00 00` between them. If NUL is found, the block is skipped; otherwise it is accepted as body_start. Confirmed: BREWERS.5 body_start correctly resolves to 0x6FD (the "Contents" heading paragraph).
 
 ### Page number zone in footers
 Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page number zone** followed by a **right-aligned document reference zone**. The page number zone is identified by a `11 06` (centre alignment) code followed by a page-number token sequence. The document reference zone begins after a `10 07` (right alignment) code and contains the human-authored text (e.g. `CND 4.1,  4 Oct 2018`).
@@ -362,6 +367,8 @@ Several structural variants exist:
 | (default) | Standard 8-byte block | Skip 8 bytes |
 
 **MEMORIAL-style paragraph breaks (body only):** In some documents (e.g. `MEMORIAL.002`) paragraphs are delimited by `22 XX 0b` block pairs rather than `0f 02 PP ctrl 0b`. The distinctive signature is `B3 = 0xe8` and `B4 = 0x05` — when this appears in the body the parser flushes the current paragraph. A page-break variant adds `B5 = 0x07`, which also triggers a jump past the binary layout block that follows.
+
+**Structural page-break blocks in `22 6d` / `22 42` body (non-`0x61` ctrl_byte only):** In `22 6d` variant files (e.g. BREWERS.5), page boundaries within the body are marked by structural blocks with `B3 ≥ 0x80`, `B4 = 0x0e`, `B5 = 0x07`, `B6 = 0x03` — i.e. `a6 0e 07 03` in the B3–B6 bytes. These are handled in the main parse loop (not `_skip_ctrl_sequence`) after the standard structural-header skip is applied: `flush_run(); flush_para(); current_para.page_break_before = True`, then jump to the next `22 ctrl 0b`. Scoped to `ctrl_byte ≠ 0x61`: standard `22 61` files use `0e 01`/`0e 02` for page breaks and their structural blocks (e.g. `c4 0e 07 03`) must not trigger a page break here. Confirmed in BREWERS.5 (12 page breaks). Investigation documented in `Header Footer Investigation v2.md` (local only).
 
 ### Other Control Types
 All other control types (`0c`, `0d`, `36`, etc.) follow a variable-length structure: skip the 2-byte prefix + type byte + 1 extra parameter byte (4 bytes total), then consume any additional non-printable parameter bytes (excluding `02` word separators and `13` which may begin a formatting sequence), then skip any doubled-pair indent markers.
