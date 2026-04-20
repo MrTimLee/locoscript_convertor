@@ -72,6 +72,9 @@ Implemented. The `10 07` (right alignment) code in footer context sets `Paragrap
 #### Page margin bytes (known limitation)
 LocoScript 2 files contain page margin bytes at offset `0x2BA`/`0x2BC` in the file header. Their unit system has not been confirmed (values differ between files: HENCOTES=`0x28`, BREWERS.5=`0x30`). The Java reference converter also hardcodes A4 1-inch margins for all files. Until the margin byte encoding is understood, the tab positions above use the hardcoded A4 values. See `Page-Margin-Investigation.md` (local only).
 
+### Per-page LocoScript control labels in `22 6d` body
+BREWERS.5 contains a per-page LocoScript UI label "Last page: Header and Footer disabled." as body text (para[231]). This label appears directly before a page break marker (`a6 0e 07 03`) and is structurally indistinguishable from a regular paragraph that precedes a page break — after `0f 02` flushes the preceding content, `current_para` is identically fresh whether the prior text was a label or real content. No reliable binary signal distinguishes the two at parse time. The label is therefore emitted as body text. This is a cosmetic artefact only (one paragraph out of 232 in BREWERS.5). Label suppression is deferred as a known limitation.
+
 ## Untested document types
 The parser was developed and validated against a single sample document (a research notes file). Locoscript 2 supported different document types (letters, labels, etc.) which may use different page-layout structures or section-break patterns not yet seen. New files may surface unrecognised `22 61 0b` variants or other control sequences — see the debugging workflow in `CLAUDE.md`.
 
