@@ -1371,6 +1371,80 @@ class TestBodyStartDetection22_6d(unittest.TestCase):
         # '1827' must be present — the scan must not skip over it
         self.assertIn('1827', result)
 
+    def test_find_body_start_skips_footer_with_nul_terminator(self):
+        """_find_body_start skips a low-B3 footer block that has a NUL terminator.
+        Mimics BREWERS.5: header (high B3), structural break, footer (low B3, B5=0x14)
+        ending with 00 00, then body (low B3, B5=0x14, no NUL)."""
+        para = self.PARA_6D
+        # Header: high-B3 block (B3=0xfa >= 0x80)
+        header_block  = para + bytes([0xfa, 0x0a, 0x14, 0x90, 0x00])
+        # Structural section-break block (B3=0xa6 >= 0x80, B4=0x0e)
+        struct_block  = para + bytes([0xa6, 0x0e, 0x0e, 0x02, 0x00])
+        # Footer: low-B3, B5=0x14, followed by "CND" text + 00 00 NUL terminator
+        footer_block  = para + bytes([0x13, 0x04, 0x14, 0x90, 0x00])
+        footer_text   = b'CND\x00\x00'
+        # Body: low-B3, B5=0x14 (same as footer, but NO NUL terminator after)
+        body_block    = para + bytes([0x42, 0x0d, 0x14, 0x78, 0x00])
+        data = (b'DOC'
+                + header_block        # offset 3
+                + struct_block        # offset 11
+                + footer_block        # offset 19
+                + footer_text         # 5 bytes (CND + 00 00); NUL at offsets 30–31
+                + body_block          # offset 32  (3+8+8+8+5)
+                + b'Hello')
+        first_para = 3
+        result = _find_body_start(data, 0x6d, first_para, 'header')
+        # Must skip the footer (NUL terminator present) and return the body block
+        self.assertEqual(result, 32)
+
+    def test_find_body_start_does_not_skip_body_without_nul(self):
+        """_find_body_start does not skip a low-B3 body block that has no NUL terminator.
+        Ensures the NUL check only rejects blocks with 00 00 between them and the next block."""
+        para = self.PARA_6D
+        high_b3_block = para + bytes([0xa6, 0x0e, 0x00, 0x00, 0x00])
+        # Footer has NUL; body has no NUL
+        footer_block  = para + bytes([0x13, 0x04, 0x14, 0x90, 0x00])
+        footer_text   = b'Footer\x00\x00'  # ends with NUL
+        body_block    = para + bytes([0x42, 0x0d, 0x14, 0x78, 0x00])
+        data = b'DOC' + high_b3_block + footer_block + footer_text + body_block + b'Body'
+        first_para = 3
+        result = _find_body_start(data, 0x6d, first_para, 'header')
+        # Footer (NUL present) must be skipped; body (no NUL) must be returned
+        expected = 3 + len(high_b3_block) + len(footer_block) + len(footer_text)
+        self.assertEqual(result, expected)
+
+    def test_a6_0e_07_03_structural_block_sets_page_break(self):
+        """In a 22 6d body, a structural block a6 0e 07 03 must set page_break_before
+        on the next paragraph and not emit the binary metadata as text."""
+        para = self.PARA_6D
+        # Minimal 22 6d file with one body paragraph followed by structural page-break
+        # Body blocks use B6=0x50 (not 0x78) so the "78 00 section-start scan-forward"
+        # path in _skip_ctrl_sequence is not triggered — default 8-byte skip applies.
+        body1   = para + bytes([0x42, 0x0d, 0x00, 0x50, 0x00])
+        # Text + paragraph break
+        text1   = b'PageOne' + bytes([0x13, 0x04, 0x50])
+        pbreak  = bytes([0x0f, 0x02]) + para + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        # Structural page-break block: B3=0xa6 (>=0x80), B4=0x0e, B5=0x07, B6=0x03
+        pb_blk  = para + bytes([0xa6, 0x0e, 0x07, 0x03, 0x00])
+        # Body block 2
+        body2   = para + bytes([0x55, 0x01, 0x00, 0x50, 0x00])
+        text2   = b'PageTwo' + bytes([0x13, 0x04, 0x50])
+        # Build a 22 6d file: need 3× para blocks so _detect_variant picks 22 6d
+        anchor  = para + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = b'DOC' + anchor * 2 + body1 + text1 + pbreak + pb_blk + body2 + text2
+        doc = parse(data)
+        content = [p for p in doc.paragraphs if p.plain_text().strip()]
+        # 'PageTwo' must be in the output
+        self.assertTrue(any('PageTwo' in p.plain_text() for p in content),
+                        "PageTwo must appear after structural page break")
+        # The paragraph containing PageTwo must have page_break_before=True
+        page_two_para = next(p for p in content if 'PageTwo' in p.plain_text())
+        self.assertTrue(page_two_para.page_break_before,
+                        "paragraph after a6 0e 07 03 structural block must have page_break_before=True")
+        # Binary metadata (e.g. 0x03 = chr(3)) must not appear as text
+        all_text = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertNotIn('\x03', all_text, "binary page-break bytes must not leak as text")
+
 
 class Test1eVariant(unittest.TestCase):
     """Tests for the 0x1e prefix byte (1e 74 0b) variant."""
