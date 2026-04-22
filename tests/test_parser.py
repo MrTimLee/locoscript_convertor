@@ -2897,5 +2897,66 @@ class TestCentreAlignIn22PrefixBlockHeader(unittest.TestCase):
         self.assertNotEqual(content[0].alignment, 'centre')
 
 
+class TestAlignmentCarryThrough(unittest.TestCase):
+    """Fix 10: 0f 04 and 10 04 block headers carry alignment from the previous paragraph."""
+
+    # Para break + centred block: 22 61 0b B3 B4 11 06 + text + 0f 02 + next block
+    _CENTRED_BLOCK = bytes([0x22, 0x61, 0x0b, 0x08, 0x04, 0x11, 0x06]) + b'HEADING'
+    _PARA_SEP = bytes([0x0f, 0x02])
+
+    def _make(self, next_block_bytes: bytes) -> list:
+        """Build data with a centred para followed by a block using next_block_bytes."""
+        data = MAGIC + self._CENTRED_BLOCK + self._PARA_SEP + next_block_bytes + b'text'
+        return parse(data).paragraphs
+
+    def test_0f_04_block_inherits_centre_alignment(self):
+        """22 61 0b B3 B4 0f 04 B1 ctrl 01 XX XX after a centred para must be centred."""
+        next_block = bytes([0x22, 0x61, 0x0b, 0x88, 0x02, 0x0f, 0x04, 0x3b, 0x61, 0x01, 0x0b, 0x0b])
+        paras = self._make(next_block)
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'centre')
+
+    def test_10_04_block_inherits_centre_alignment(self):
+        """22 61 0b B3 B4 10 04 22 3d XX after a centred para must be centred."""
+        next_block = bytes([0x22, 0x61, 0x0b, 0x50, 0x01, 0x10, 0x04, 0x22, 0x3d, 0x1d])
+        paras = self._make(next_block)
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'centre')
+
+    def test_0f_04_after_left_para_stays_left(self):
+        """0f 04 block after a left-aligned para must remain left-aligned."""
+        left_block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00]) + b'left'
+        next_block = bytes([0x22, 0x61, 0x0b, 0x88, 0x02, 0x0f, 0x04, 0x3b, 0x61, 0x01, 0x0b, 0x0b])
+        data = MAGIC + left_block + self._PARA_SEP + next_block + b'text'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'left')
+
+    def test_0f_04_content_tab_stop_not_recorded_for_centred_para(self):
+        """0f 04 inside a centred paragraph must NOT record a tab stop."""
+        centred_block = bytes([0x22, 0x61, 0x0b, 0x50, 0x01, 0x10, 0x04, 0x22, 0x3d, 0x1d])
+        tab_seq = bytes([0x0f, 0x04, 0x3e, 0x61])  # 0f 04 B1=0x3e B2=ctrl_byte
+        data = MAGIC + self._CENTRED_BLOCK + self._PARA_SEP + centred_block + b'date' + tab_seq + b'place'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        # The centred paragraph following HEADING must have no recorded tab stops
+        centred_paras = [p for p in content if p.alignment == 'centre' and 'place' in p.plain_text()]
+        self.assertTrue(centred_paras, 'expected a centred para containing place text')
+        self.assertEqual(centred_paras[0].tab_stops, [])
+
+    def test_0f_04_content_tab_stop_recorded_for_left_para(self):
+        """0f 04 inside a left-aligned paragraph must still record its tab stop."""
+        left_block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00])
+        tab_seq = bytes([0x0f, 0x04, 0x3e, 0x61])
+        data = MAGIC + left_block + b'date' + tab_seq + b'place'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertTrue(content)
+        self.assertNotEqual(content[0].tab_stops, [])
+
+
 if __name__ == '__main__':
     unittest.main()

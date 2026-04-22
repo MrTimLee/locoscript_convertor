@@ -560,6 +560,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     superscript = False
     subscript = False
     current_font_size: float | None = None
+    _last_para_alignment = 'left'
 
     def flush_run():
         nonlocal current_text
@@ -571,7 +572,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         current_text = []
 
     def flush_para():
-        nonlocal current_para
+        nonlocal current_para, _last_para_alignment
         flush_run()
         if not any(r.text.strip() or r.page_number for r in current_para.runs):
             was_page_break = current_para.page_break_before
@@ -583,6 +584,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         elif current_section == 'footer':
             doc.footer = current_para
         else:
+            _last_para_alignment = current_para.alignment
             doc.paragraphs.append(current_para)
         current_para = Paragraph()
 
@@ -703,7 +705,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 i += 1
             # B1 is the first printable byte: the indent/tab column in scale pitch units.
             # Record it as an explicit tab stop (twips) before consuming both B1 and B2.
-            if is_tab and not is_structural and i < n and 0x20 <= data[i] <= 0x7E:
+            if (is_tab and not is_structural and i < n and 0x20 <= data[i] <= 0x7E
+                    and current_para.alignment != 'centre'):
                 current_para.tab_stops.append(data[i] * _twips_per_unit)
             # Skip up to 2 printable tab-stop encoding bytes (B1 and B2)
             for _ in range(2):
@@ -998,6 +1001,23 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         flush_para()
                     i = next_block if next_block >= 0 else n
                     continue
+                # Alignment carry-through: LocoScript 2 centre alignment persists
+                # across paragraphs until a new alignment code appears.  Block headers
+                # that carry only SI-tab or right-tab zone metadata (B5=0x0f/0x10 with
+                # B6=0x04, or the compound 14 78 00 10 04 variant) embed no explicit
+                # alignment signal; they inherit the previous body paragraph's alignment.
+                # Confirmed: MEMORIAL.002 A–H entries (0f 04 headers) and 1915–1918
+                # war-service entries (10 04 and 14 78 00 10 04 headers) all follow
+                # centred paragraphs and must themselves be centred.
+                _carry_align_block = (
+                    ctrl_type == 0x0b and i + 6 < n and (
+                        (data[i + 5] == 0x0f and data[i + 6] == 0x04) or
+                        (data[i + 5] == 0x10 and data[i + 6] == 0x04) or
+                        (i + 9 < n and data[i + 5] == 0x14 and data[i + 6] == 0x78
+                         and data[i + 7] == 0x00 and data[i + 8] == 0x10
+                         and data[i + 9] == 0x04)
+                    )
+                )
                 i = _skip_ctrl_sequence(data, i, ctrl_byte, prefix_byte)
                 i_after_skip = i
                 # Skip trailing indent metadata: 00 01 + doubled pair
@@ -1022,6 +1042,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     _pending_large_font = 0.0  # 14.4pt is the heading font; suppress for sub-entries
                 if _pending_large_font:
                     current_para.font_size = _pending_large_font
+                if _carry_align_block and current_para.alignment == 'left':
+                    current_para.alignment = _last_para_alignment
             continue
 
         # --- Word separator: 02 ---
