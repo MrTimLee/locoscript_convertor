@@ -2867,5 +2867,35 @@ class TestCompoundPasschendaeleBlockSkip(unittest.TestCase):
                 self.assertNotEqual(para.alignment, 'right')
 
 
+class TestCentreAlignIn22PrefixBlockHeader(unittest.TestCase):
+    """Fix 9: 22 61 0b B3 B4 11 06 ... must apply centre alignment in 22-prefix files."""
+
+    def test_11_06_at_b5_b6_sets_centre_alignment(self):
+        """22 61 0b B3 B4 11 06 ... must produce alignment='centre'."""
+        block = bytes([0x22, 0x61, 0x0b, 0x18, 0x03, 0x11, 0x06])
+        data = MAGIC + block + b'HEADING'
+        doc = parse(data)
+        content = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertTrue(content, 'expected at least one content paragraph')
+        self.assertEqual(content[0].alignment, 'centre')
+
+    def test_11_06_at_b5_b6_emits_correct_text(self):
+        """Text following the block must not contain artefacts."""
+        block = bytes([0x22, 0x61, 0x0b, 0x18, 0x03, 0x11, 0x06])
+        data = MAGIC + block + b'HEADING'
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('HEADING', combined)
+
+    def test_default_block_without_11_06_remains_left_aligned(self):
+        """Standard 22 61 0b block without 11 06 must remain left-aligned."""
+        block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + block + b'text'
+        doc = parse(data)
+        content = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertTrue(content)
+        self.assertNotEqual(content[0].alignment, 'centre')
+
+
 if __name__ == '__main__':
     unittest.main()

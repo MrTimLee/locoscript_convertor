@@ -408,11 +408,11 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
             i += 11
-        elif (prefix_byte != 0x22 and i + 6 < n
-              and data[i+5] == 0x11 and data[i+6] == 0x06):
-            # Centre-alignment marker at B5/B6 of block header in 1e-prefix variant
-            # files.  Skip 5 bytes (the block header up to B4) and leave 11 06 for
-            # the main loop to apply the alignment to the current paragraph.
+        elif i + 6 < n and data[i+5] == 0x11 and data[i+6] == 0x06:
+            # Centre-alignment marker at B5/B6 of block header.  Skip 5 bytes
+            # (the block header up to B4) and leave 11 06 for the main loop to
+            # apply the alignment to the current paragraph.  Confirmed in both
+            # 1e-prefix (BINDINDX) and 22-prefix (MEMORIAL.002, HENCOTES) files.
             i += 5
         elif i + 7 < n and data[i+7] == 0x0f:
             # B7 is an 0f SI byte — part of an 0f XX sequence (tab, hanging indent,
