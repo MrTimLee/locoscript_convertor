@@ -105,6 +105,10 @@ def _rtf_para(para: 'Paragraph') -> str:
         zone2 = [_rtf_run(r) for r in para.runs if not r.page_number and r.text.strip()]
         content = r'\tab ' + ' '.join(zone1) + r' \tab ' + ' '.join(zone2)
         return page_break + r'\pard\tqc\tx4513\tqr\tx9026' + font_size + ' ' + content + r'\par'
+    if para.inline_right_tab:
+        # Two-zone body paragraph: left text + \t + right-aligned text on one line.
+        # Right tab stop hardcoded for A4 with 1-inch margins: 9026 twips.
+        return page_break + r'\pard\tqr\tx9026' + indent + font_size + ' ' + ' '.join(parts) + r'\par'
     align = _rtf_align.get(para.alignment, '')
     tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
     return page_break + r'\pard' + align + indent + tab_stops + font_size + ' ' + ' '.join(parts) + r'\par'
@@ -253,7 +257,17 @@ def save_docx(doc: Document, dest: Path) -> None:
                 p.alignment = _docx_align[para.alignment]
             if para.left_indent:
                 p.paragraph_format.left_indent = Twips(para.left_indent)
-            _apply_tab_stops(p, para.tab_stops)
+            if para.inline_right_tab:
+                # Right tab stop at right margin (hardcoded A4 1-inch margins: 9026 twips).
+                pPr = p._p.get_or_add_pPr()
+                tabs_el = OxmlElement('w:tabs')
+                right_tab = OxmlElement('w:tab')
+                right_tab.set(qn('w:val'), 'right')
+                right_tab.set(qn('w:pos'), '9026')
+                tabs_el.append(right_tab)
+                pPr.append(tabs_el)
+            else:
+                _apply_tab_stops(p, para.tab_stops)
         for run in para.runs:
             if run.page_number:
                 _add_page_number_field(p, run)

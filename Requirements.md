@@ -61,6 +61,8 @@ In `22 6d` variant files, the footer block can have a **low B3 byte** (e.g. `B3=
 
 Fix: when the fallback scan considers a low-B3 candidate (either because a high-B3 block has been seen, or because `B5 ≠ 0x14`), it now checks for a `00 00` NUL terminator between the candidate and the next `22 ctrl 0b` block. Pre-body header/footer zones always end with two NUL bytes before the binary layout blob; body paragraphs never have `00 00` between them. If NUL is found, the block is skipped; otherwise it is accepted as body_start. Confirmed: BREWERS.5 body_start correctly resolves to 0x6FD (the "Contents" heading paragraph).
 
+**Refinement (MEMORIAL.002):** The NUL search is now restricted to bytes that appear **after the first printable byte** in the scan range. In some documents (e.g. MEMORIAL.002 `22 61` letter format), the block header is followed by binary parameter bytes that contain `00 00` before any printable text. Without this refinement, the false positive NUL detection caused body_start to advance too far (to 0x834 rather than the correct 0x76d). The rule is: if no printable byte exists before `00 00`, the NUL is binary metadata and does not disqualify the block; only a `00 00` that follows text is a genuine pre-body terminator.
+
 ### Page number zone in footers
 Footer sections in Locoscript 2 use a two-zone layout: a **centre-aligned page number zone** followed by a **right-aligned document reference zone**. The page number zone is identified by a `11 06` (centre alignment) code followed by a page-number token sequence. The document reference zone begins after a `10 07` (right alignment) code and contains the human-authored text (e.g. `CND 4.1,  4 Oct 2018`).
 
@@ -256,7 +258,9 @@ Two-byte sequences setting the alignment of the current paragraph:
 
 Both bytes are consumed as a unit; the second byte is a parameter and does not produce output. Alignment defaults to left when no alignment code is present. Confirmed from real sample files — `11 06` appears immediately after `22 61 0b` paragraph content blocks in ~4,000 occurrences across the sample set.
 
-RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOCX output sets `paragraph.alignment` to `WD_ALIGN_PARAGRAPH.CENTER` or `WD_ALIGN_PARAGRAPH.RIGHT`.
+**Context-sensitive `10 07`/`10 04` behaviour:** when the code appears at the **start** of a paragraph (no content accumulated yet) and in a non-footer section, it sets `alignment='right'` for the whole paragraph (standard whole-paragraph right alignment). When it appears **mid-paragraph** (content has already been accumulated) and in a non-footer section, it splits the paragraph into a left zone and a right zone on the same line — identical to the footer two-zone tab layout. The parser sets `Paragraph.inline_right_tab = True`, emits a `\t` tab character into the current text, and subsequent text forms the right-aligned zone. Converters apply a right tab stop at the right margin (9026 twips, hardcoded A4 1-inch margins), identical to the footer tab behaviour.
+
+RTF output uses `\qc` (centre) or `\qr` (right) on the `\pard` control word. DOCX output sets `paragraph.alignment` to `WD_ALIGN_PARAGRAPH.CENTER` or `WD_ALIGN_PARAGRAPH.RIGHT`. For `inline_right_tab` paragraphs, RTF uses `\tqr\tx9026` and DOCX adds a right tab stop XML element.
 
 ### SI Tab / Hanging Indent preamble
 
@@ -367,9 +371,13 @@ Several structural variants exist:
 | `B6` = `0f` and `B7` = `0x04` | Column spec shifted one byte later by a B5 sequence number (values `0x31`/`0x32`/`0x33` seen in `BINDINDX.HEX` sub-entries, e.g. `1e 74 0b 8e 0d 31 0f 04 23 74 01 0d 0d`). Structure: `B3 B4 B5 0f 04 B1 B2 [01 PP PP]`. No tab emitted. | Skip 10 bytes then consume optional `01` separator + identical-byte indent pair |
 | `B7 B8` = `13 04` | Formatting prefix one byte later — leave for main loop | Skip 7 bytes |
 | `B7 B8` = `22 XX` | Nested control prefix at indent position — leave for main loop | Skip 7 bytes |
+| `B5` = `0x10` and `B6` = `0x04` | Right-tab zone header (MEMORIAL.002 form): `22 XX 0b B3 B4 10 04 22 3d XX`. Default 8-byte skip lands at `3d XX` ('='), emitting '=' artefacts. Skip 10 bytes to clear the entire sequence. Confirmed across 15 occurrences in MEMORIAL.002. | Skip 10 bytes |
+| `B5` = `0x14`, `B6` = `0x78`, `B7` = `0x00`, `B8` = `0x10`, `B9` = `0x04` | Compound PASSCHENDAELE variant: font-size bytes (`14 78 00`) immediately before right-tab zone code (`10 04`). Example: `22 61 0b f8 01 14 78 00 10 04 22 3d 3d`. Default skip lands in the middle, causing `"==` artefacts. Skip 10 bytes, then consume the following prefix byte (`22`) and doubled pair (`3d 3d`). | Skip 10 bytes + optional prefix + optional doubled pair |
 | (default) | Standard 8-byte block | Skip 8 bytes |
 
 **MEMORIAL-style paragraph breaks (body only):** In some documents (e.g. `MEMORIAL.002`) paragraphs are delimited by `22 XX 0b` block pairs rather than `0f 02 PP ctrl 0b`. The distinctive signature is `B3 = 0xe8` and `B4 = 0x05` — when this appears in the body the parser flushes the current paragraph. A page-break variant adds `B5 = 0x07`, which also triggers a jump past the binary layout block that follows.
+
+**Pre-body structural transition blocks (`B3=0xe8`, `B4=0x05`):** The same `e8 05` signature also appears in the pre-body zone (before `body_start`) as empty section-boundary markers. These are NOT paragraph breaks — the block is followed by binary metadata (not body text). When `i < body_start` and the block has `B3=0xe8`, `B4=0x05`, the parser jumps directly to the next `para_ctrl` to skip all binary payload and prevent it leaking into the header. Confirmed in MEMORIAL.002 pre-body zone (0x5ed–0x76d).
 
 **Structural page-break blocks in `22 6d` / `22 42` body (non-`0x61` ctrl_byte only):** In `22 6d` variant files (e.g. BREWERS.5), page boundaries within the body are marked by structural blocks with `B3 ≥ 0x80`, `B4 = 0x0e`, `B5 = 0x07`, `B6 = 0x03` — i.e. `a6 0e 07 03` in the B3–B6 bytes. These are handled in the main parse loop (not `_skip_ctrl_sequence`) after the standard structural-header skip is applied: `flush_run(); flush_para(); current_para.page_break_before = True`, then jump to the next `22 ctrl 0b`. Scoped to `ctrl_byte ≠ 0x61`: standard `22 61` files use `0e 01`/`0e 02` for page breaks and their structural blocks (e.g. `c4 0e 07 03`) must not trigger a page break here. Confirmed in BREWERS.5 (12 page breaks). Investigation documented in `Header Footer Investigation v2.md` (local only).
 
@@ -377,6 +385,12 @@ Several structural variants exist:
 All other control types (`0c`, `0d`, `36`, etc.) follow a variable-length structure: skip the 2-byte prefix + type byte + 1 extra parameter byte (4 bytes total), then consume any additional non-printable parameter bytes (excluding `02` word separators and `13` which may begin a formatting sequence), then skip any doubled-pair indent markers.
 
 **Self-referential sequences — `22 XX XX` (type == ctrl_byte):** When the control type byte equals the ctrl_byte itself (e.g. `22 61 61` in standard files, `22 6d 6d` in `22 6d` variant files), the sequence is always binary layout/page metadata and never contains body text. The parser skips directly to the next `22 XX 0b` paragraph content block rather than using the variable-length skip, which would otherwise stop at the first printable byte and leak binary data as text artefacts.
+
+**Self-referential skip + preceding paragraph break:** When a self-referential `22 XX XX` sequence jumps to a target `22 XX 0b` block, the two bytes immediately before the target block are checked for `0f 02` (paragraph break). If found, `flush_run()` and `flush_para()` are called before the jump, preserving the paragraph boundary that the direct jump would otherwise bypass. Confirmed in MEMORIAL.002 at 0x15bd (`22 61 61` jump bypasses `0f 02` at 0x15de).
+
+**SOH doubled-pair structural marker — `01 XX XX` (3 bytes):** A `SOH` byte (`0x01`) followed by two identical printable bytes is a structural indent/layout marker. It appears in binary metadata sequences (e.g. after variable-length skips that stop at a `WORD_SEP`) and must be consumed silently. Detected in the main parse loop as `data[i] == 0x01 and data[i+1] == data[i+2] and data[i+1] >= min_dp`.
+
+**Column/layout spec — `0c XX 01 YY 01 ZZ` (6 bytes):** FF (`0x0c`) followed by a printable byte and `0x01` identifies a structural column/section layout parameter. The printable byte (e.g. `0x24` = '$', `0x23` = '#') would otherwise be emitted as text. Distinguished from legitimate `0c word` sequences where the byte after the printable char is NOT `0x01`. Skip 6 bytes. Confirmed in MEMORIAL.002 at 0x1188 and 0x15b1.
 
 ## Trailing Indent Metadata Pattern
 
