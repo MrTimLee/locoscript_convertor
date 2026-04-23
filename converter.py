@@ -22,6 +22,8 @@ def to_txt(doc: Document) -> str:
         if text.strip():
             if para.page_break_before:
                 lines.append('--- page break ---')
+            if para.space_before and lines:
+                lines.append('')
             lines.append(text)
     if doc.footer and doc.footer.plain_text().strip():
         lines.append('---')
@@ -170,6 +172,8 @@ def to_rtf(doc: Document) -> str:
     for para in doc.paragraphs:
         if not para.plain_text().strip():
             continue
+        if para.space_before:
+            parts.append(r'\pard\par' + '\n')
         p = _rtf_para(para, font_map)
         if p:
             parts.append(p + '\n')
@@ -189,7 +193,7 @@ def save_docx(doc: Document, dest: Path) -> None:
     try:
         from docx import Document as DocxDocument
         from docx.shared import Pt, Twips
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
         from docx.oxml.ns import qn
         from docx.oxml import OxmlElement
     except ImportError as e:
@@ -200,9 +204,11 @@ def save_docx(doc: Document, dest: Path) -> None:
 
     docx = DocxDocument()
 
-    # Set the document default font from the file's font table slot 0.
+    normal = docx.styles['Normal']
     if doc.fonts and doc.fonts[0]:
-        docx.styles['Normal'].font.name = doc.fonts[0]
+        normal.font.name = doc.fonts[0]
+    normal.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    normal.paragraph_format.space_after = Pt(0)
 
     _docx_align = {
         'centre': WD_ALIGN_PARAGRAPH.CENTER,
@@ -338,6 +344,8 @@ def save_docx(doc: Document, dest: Path) -> None:
     for para in doc.paragraphs:
         if not para.plain_text().strip():
             continue
+        if para.space_before:
+            docx.add_paragraph()
         _add_para(docx, para)
 
     docx.save(dest)
