@@ -120,6 +120,20 @@ Every valid Locoscript 2 file begins with a three-byte ASCII magic number. Two m
 
 For `DOC` files, content parsing begins at the first occurrence of the paragraph content marker `22 XX 0b` — everything before it is a document header containing page layout and section metadata that is not needed for text extraction.
 
+### Font Table (`0x0138`)
+
+The font table at `0x0138` contains 10 × 28-byte entries listing the fonts installed in the document:
+
+| Entry offset | Field | Notes |
+|---|---|---|
+| +0 | Name length byte | 0 = unused slot |
+| +1..+23 | Font name (Latin-1) | Up to 23 characters |
+| +24..+27 | Trailing data | Internal reference bytes; encoding not decoded |
+
+Slot 0 is the document default face. Slot 2 is the alternate face used for inscription/serif sections (see Format B below). The parser reads all 10 slot names into `Document.fonts`.
+
+Known font names confirmed in real files: "CG Times", "Sans H" (= CG Times on a different printer config), "Roman T", "LX Roman", "LX Sanserif", "CourierCondensed", "LX Bodoni Poster", "LX Broadway", "LX Brush", "LX Park Avenue", "LX Prestige". RTF output uses `\froman`/`\fswiss`/`\fmodern` family tags derived from the name.
+
 ### Layout Table (`0x2C6`)
 
 The layout table at `0x2C6` contains 10 × 73-byte entries describing page layout configurations. Key fields in each entry:
@@ -163,6 +177,22 @@ Extended characters that require more than one byte are encoded using the ENQ se
 
 ### Word Separator — `02`
 A single byte `02` represents an inter-word space. Words within a run are separated by this rather than a literal `0x20` space byte.
+
+### Font Face Switch — Format B (`22 61 TYPE 0a 0d`)
+
+A sub-sequence within a body paragraph that switches the active font face from the document default (slot 0) to the alternate face (slot 2).  Identified by three characteristics:
+
+- Starts with `22 61 TYPE` where TYPE is any byte **other than** `0x0b` (paragraph anchor) or the file's ctrl_byte (self-referential)
+- Followed immediately by `0a 0d` (LF control byte with parameter x=13; x=9 for normal paragraphs per the reference doc — x=13 distinguishes a style change)
+- Appears only in body paragraphs of documents that have a non-empty font slot 2
+
+Confirmed in four files: MEMORIAL.002 (Roman T, slot 2), ABBEYGRD.4, MEMORIAL.004, DUNWOODY (all LX Roman, slot 2). Zero occurrences in single-font files (HENCOTES, BREWERS.5, BUILDNGS.*).
+
+The TYPE byte (values 0x22–0x38 observed) is a screen-column position hint, identical in role to the TYPE byte in Format A (`22 61 TYPE 01 YY YY`). It does NOT encode a font slot index.
+
+After `0a 0d`, the byte stream continues normally: optional `02` word separator, optional `13 04 XX` font-size commands, optional `01 ZZ ZZ` SOH indent hint, then body text. The face switch applies to all runs in the current paragraph and resets at the next paragraph boundary (`flush_para()`). No explicit "switch back" command has been found.
+
+RTF output wraps the run in `{\f1 ...}` (scoped group) referencing the `\f1` font table entry (slot 2). DOCX sets `run.font.name = font_face`. Documents with no slot-2 font silently ignore Format B.
 
 ### Font Size — `13 04 xx`
 Three-byte inline font-size command. The third byte encodes the point size × 10:
