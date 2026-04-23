@@ -3054,12 +3054,27 @@ class TestFormatB(unittest.TestCase):
         text_runs = [r for p in doc.paragraphs for r in p.runs if r.text.strip()]
         self.assertTrue(all(r.font_face is None for r in text_runs))
 
-    def test_font_face_resets_after_paragraph(self):
-        """font_face set by Format B must not bleed into the next paragraph."""
+    def test_font_face_persists_across_paragraph_break(self):
+        """font_face set by Format B persists through 0f 02 paragraph breaks within a section."""
         sep = bytes([0x0f, 0x02]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
         body = (PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
                 + self._FORMAT_B + self._SOH_INDENT + b'Serif'
-                + sep + b'Plain')
+                + sep + b'AlsoSerif')
+        data = _doc_with_fonts('DefaultF', 'AltFont', body)
+        doc = parse(data)
+        plain_paras = [p for p in doc.paragraphs if 'AlsoSerif' in p.plain_text()]
+        self.assertEqual(len(plain_paras), 1)
+        plain_runs = [r for r in plain_paras[0].runs if r.text.strip()]
+        self.assertTrue(all(r.font_face == 'AltFont' for r in plain_runs))
+
+    def test_font_face_resets_at_section_separator(self):
+        """font_face resets to None at an e8 05 section separator."""
+        sep = bytes([0x0f, 0x02])
+        e8_block = bytes([0x22, 0x61, 0x0b, 0xe8, 0x05, 0x0f, 0x02])
+        next_block = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        body = (PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + self._FORMAT_B + self._SOH_INDENT + b'Serif'
+                + sep + e8_block + next_block + b'Plain')
         data = _doc_with_fonts('DefaultF', 'AltFont', body)
         doc = parse(data)
         plain_paras = [p for p in doc.paragraphs if 'Plain' in p.plain_text()]
@@ -3117,6 +3132,71 @@ class TestRtfFontTable(unittest.TestCase):
         data = _doc(b'Hello')
         rtf = to_rtf(parse(data))
         self.assertNotIn(r'\f1', rtf)
+
+
+class TestSpaceBefore(unittest.TestCase):
+    """e8 05 section separator sets space_before on the following paragraph."""
+
+    # Minimal synthetic body: e8 05 block followed by a 0f 02 then content.
+    # Structure mirrors real MEMORIAL.002 usage.
+    def _memorial_body(self, content: bytes) -> bytes:
+        """Wrap content in the e8 05 + 0f 02 pattern that precedes each section."""
+        # e8 05 block: 22 61 0b e8 05 0f 02 <prefix of next block>
+        # The 7-byte skip lands on the next 22 61, so we include it inline.
+        e8_block = bytes([0x22, 0x61, 0x0b, 0xe8, 0x05, 0x0f, 0x02])
+        next_block = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        return e8_block + next_block + content
+
+    def test_e8_05_sets_space_before_on_following_paragraph(self):
+        """Paragraph after an e8 05 block gets space_before=True."""
+        body = self._memorial_body(b'Section')
+        doc = parse(_doc(body))
+        # para[0] is the initial empty-ish paragraph; find the 'Section' one
+        section_paras = [p for p in doc.paragraphs if 'Section' in p.plain_text()]
+        self.assertEqual(len(section_paras), 1)
+        self.assertTrue(section_paras[0].space_before)
+
+    def test_no_e8_05_space_before_is_false(self):
+        """Normal paragraph break produces space_before=False."""
+        body = b'Hello' + PARA_SEP + b'World'
+        doc = parse(_doc(body))
+        for p in doc.paragraphs:
+            self.assertFalse(p.space_before)
+
+    def test_space_before_propagates_through_empty_para(self):
+        """space_before survives an intervening empty paragraph flush."""
+        # Two consecutive e8 05 blocks (Bibliography pattern).
+        e8 = bytes([0x22, 0x61, 0x0b, 0xe8, 0x05, 0x0f, 0x02])
+        next_block = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        body = e8 + e8 + next_block + b'Bib'
+        doc = parse(_doc(body))
+        bib_paras = [p for p in doc.paragraphs if 'Bib' in p.plain_text()]
+        self.assertEqual(len(bib_paras), 1)
+        self.assertTrue(bib_paras[0].space_before)
+
+    def test_preceding_content_para_has_no_space_before(self):
+        """The paragraph before the e8 05 block is unaffected."""
+        body = b'Before' + bytes([0x0f, 0x02]) + self._memorial_body(b'After')
+        doc = parse(_doc(body))
+        before_paras = [p for p in doc.paragraphs if 'Before' in p.plain_text()]
+        self.assertEqual(len(before_paras), 1)
+        self.assertFalse(before_paras[0].space_before)
+
+    def test_space_before_txt_extra_blank_line(self):
+        """to_txt inserts an empty string entry before a space_before paragraph."""
+        body = b'Intro' + bytes([0x0f, 0x02]) + self._memorial_body(b'Section')
+        doc = parse(_doc(body))
+        txt = to_txt(doc)
+        # There should be a double gap (two \n\n joins = four newlines) between
+        # Intro and Section, i.e. the empty '' entry is present.
+        self.assertIn('Intro\n\n\n\nSection', txt)
+
+    def test_space_before_rtf_emits_empty_par(self):
+        """to_rtf emits a \\pard\\par blank paragraph before space_before sections."""
+        body = b'Intro' + bytes([0x0f, 0x02]) + self._memorial_body(b'Section')
+        doc = parse(_doc(body))
+        rtf = to_rtf(doc)
+        self.assertIn(r'\pard\par', rtf)
 
 
 if __name__ == '__main__':

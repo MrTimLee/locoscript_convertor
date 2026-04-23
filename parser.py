@@ -114,6 +114,7 @@ class Paragraph:
         self.left_indent: int = 0        # left indent in twips (0 = none)
         self.font_size: float | None = None  # point size (None = document default)
         self.page_break_before: bool = False  # True when a page/section break precedes this paragraph
+        self.space_before: bool = False      # True when an e8 05 section separator precedes this paragraph
         self.footer_tab: bool = False        # True when footer has centre+right two-zone layout
         self.inline_right_tab: bool = False  # True when 10 07/10 04 splits a body paragraph left+right
 
@@ -610,8 +611,10 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         flush_run()
         if not any(r.text.strip() or r.page_number for r in current_para.runs):
             was_page_break = current_para.page_break_before
+            was_space_before = current_para.space_before
             current_para = Paragraph()
             current_para.page_break_before = was_page_break
+            current_para.space_before = was_space_before
             current_font_face = None
             return
         if current_section == 'header':
@@ -622,7 +625,6 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             _last_para_alignment = current_para.alignment
             doc.paragraphs.append(current_para)
         current_para = Paragraph()
-        current_font_face = None
 
     while i < n:
         # --- Pre-body NUL terminator: 00 00 ---
@@ -928,6 +930,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         if i + 4 < n and data[i + 3] == 0xe8 and data[i + 4] == 0x05:
                             flush_run()
                             flush_para()
+                            current_para.space_before = True
                         # Page break indicator: B5=0x07 means a binary page-layout
                         # block follows (seen in MEMORIAL-style documents as
                         # "22 XX 0b B3 B4 07 03 ...").  Jump to the next paragraph
@@ -1040,7 +1043,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 # Format B: 22 61 TYPE 0a 0d — font face switch to slot 2.
                 # Appears only in body paragraphs that use a non-default face (e.g.
                 # inscription text in Roman T / LX Roman).  Sets current_font_face for
-                # all runs in this paragraph; resets at flush_para().
+                # subsequent runs; persists across 0f 02 paragraph breaks until an
+                # e8 05 section separator (which resets via flush_para empty path).
                 if (i >= body_start
                         and i + 4 < n
                         and data[i + 3] == 0x0a and data[i + 4] == 0x0d
