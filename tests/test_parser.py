@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from parser import (parse, ParseError, Document, Paragraph, TextRun,
-                    _detect_variant, _find_body_start, _find_footer_start)
+                    _detect_variant, _find_body_start, _find_footer_start,
+                    _parse_font_table)
 from converter import to_txt, to_rtf
 
 
@@ -2956,6 +2957,166 @@ class TestAlignmentCarryThrough(unittest.TestCase):
         content = [p for p in paras if p.plain_text().strip()]
         self.assertTrue(content)
         self.assertNotEqual(content[0].tab_stops, [])
+
+
+# ---------------------------------------------------------------------------
+# Font table and Format B font-face switching
+# ---------------------------------------------------------------------------
+
+_FONT_TABLE_OFF = 0x0138
+_FONT_ENTRY_SIZE = 28
+
+
+def _doc_with_fonts(slot0: str, slot2: str, body: bytes) -> bytes:
+    """Build a synthetic file with font table entries at 0x0138.
+
+    Pads from byte 3 to 0x0138 with NUL bytes (non-printable, skipped by the
+    parser).  The font table occupies 10 × 28 bytes starting at 0x0138.  The
+    body (which must start with its own ``22 61 0b`` paragraph anchor) follows
+    immediately after the font table.  The parser's main loop only runs from
+    ``first_para`` onwards, so the NUL pad and font table are never treated as
+    body text.
+    """
+    buf = bytearray(_FONT_TABLE_OFF)
+    buf[:3] = b'DOC'
+    font_table = bytearray(_FONT_ENTRY_SIZE * 10)
+    for name, slot in [(slot0, 0), (slot2, 2)]:
+        if name:
+            nlen = min(len(name), 23)
+            off = slot * _FONT_ENTRY_SIZE
+            font_table[off] = nlen
+            font_table[off + 1 : off + 1 + nlen] = name[:nlen].encode('latin-1')
+    buf.extend(font_table)
+    buf.extend(body)
+    return bytes(buf)
+
+
+class TestFontTable(unittest.TestCase):
+
+    def test_parse_font_table_named_slots(self):
+        from parser import _parse_font_table
+        data = bytearray(_FONT_TABLE_OFF + 10 * _FONT_ENTRY_SIZE)
+        for name, slot in [('Sans H', 0), ('Roman T', 2), ('LX Park Avenue', 3)]:
+            off = _FONT_TABLE_OFF + slot * _FONT_ENTRY_SIZE
+            enc = name.encode('latin-1')
+            data[off] = len(enc)
+            data[off + 1 : off + 1 + len(enc)] = enc
+        fonts = _parse_font_table(bytes(data))
+        self.assertEqual(fonts[0], 'Sans H')
+        self.assertEqual(fonts[1], '')
+        self.assertEqual(fonts[2], 'Roman T')
+        self.assertEqual(fonts[3], 'LX Park Avenue')
+        self.assertEqual(fonts[4], '')
+
+    def test_parse_font_table_short_file(self):
+        from parser import _parse_font_table
+        fonts = _parse_font_table(b'DOC')
+        self.assertEqual(fonts, [''] * 10)
+
+    def test_doc_fonts_populated(self):
+        """parse() should populate doc.fonts from the file header font table."""
+        body = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00]) + b'Hi'
+        data = _doc_with_fonts('DefaultF', 'AltFont', body)
+        doc = parse(data)
+        self.assertEqual(doc.fonts[0], 'DefaultF')
+        self.assertEqual(doc.fonts[2], 'AltFont')
+
+    def test_doc_fonts_default_empty(self):
+        """Minimal files with no font table should have all-empty doc.fonts."""
+        doc = parse(_doc(b'Hello'))
+        self.assertEqual(doc.fonts, [''] * 10)
+
+
+class TestFormatB(unittest.TestCase):
+    """Format B: ``22 61 TYPE 0a 0d`` switches font face to doc.fonts[2]."""
+
+    _FORMAT_B = bytes([0x22, 0x61, 0x2f, 0x0a, 0x0d])   # TYPE=0x2f (as in MEMORIAL.002)
+    _SOH_INDENT = bytes([0x02, 0x01, 0x1e, 0x1e])         # word sep + SOH indent
+
+    def _make_body(self, pre: bytes = b'') -> bytes:
+        """Return body bytes with an optional pre-Format-B paragraph."""
+        anchor = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        return anchor + pre + self._FORMAT_B + self._SOH_INDENT + b'Hello'
+
+    def test_format_b_sets_font_face_on_runs(self):
+        """Runs following Format B should have font_face = slot-2 name."""
+        data = _doc_with_fonts('DefaultF', 'AltFont', self._make_body())
+        doc = parse(data)
+        paras = [p for p in doc.paragraphs if 'Hello' in p.plain_text()]
+        self.assertEqual(len(paras), 1)
+        text_runs = [r for r in paras[0].runs if r.text.strip()]
+        self.assertTrue(text_runs, 'expected at least one text run')
+        self.assertTrue(all(r.font_face == 'AltFont' for r in text_runs))
+
+    def test_no_format_b_font_face_is_none(self):
+        """Normal runs without Format B should have font_face = None."""
+        doc = parse(_doc(b'Hello'))
+        text_runs = [r for p in doc.paragraphs for r in p.runs if r.text.strip()]
+        self.assertTrue(all(r.font_face is None for r in text_runs))
+
+    def test_font_face_resets_after_paragraph(self):
+        """font_face set by Format B must not bleed into the next paragraph."""
+        sep = bytes([0x0f, 0x02]) + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        body = (PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + self._FORMAT_B + self._SOH_INDENT + b'Serif'
+                + sep + b'Plain')
+        data = _doc_with_fonts('DefaultF', 'AltFont', body)
+        doc = parse(data)
+        plain_paras = [p for p in doc.paragraphs if 'Plain' in p.plain_text()]
+        self.assertEqual(len(plain_paras), 1)
+        plain_runs = [r for r in plain_paras[0].runs if r.text.strip()]
+        self.assertTrue(all(r.font_face is None for r in plain_runs))
+
+    def test_format_b_ignored_when_no_slot2(self):
+        """Format B with an empty slot 2 must not set font_face (nothing to switch to)."""
+        body = (PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + self._FORMAT_B + self._SOH_INDENT + b'Hello')
+        data = _doc_with_fonts('DefaultF', '', body)
+        doc = parse(data)
+        text_runs = [r for p in doc.paragraphs for r in p.runs if r.text.strip()]
+        self.assertTrue(all(r.font_face is None for r in text_runs))
+
+
+class TestRtfFontTable(unittest.TestCase):
+
+    def test_rtf_uses_slot0_as_default_font(self):
+        """RTF output must declare slot-0 font as \\f0 in the font table."""
+        body = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00]) + b'Hi'
+        data = _doc_with_fonts('CG Times', 'LX Roman', body)
+        rtf = to_rtf(parse(data))
+        self.assertIn('CG Times', rtf)
+        self.assertIn(r'\f0', rtf)
+
+    def test_rtf_declares_alt_font_when_present(self):
+        """RTF output must include \\f1 entry for slot-2 font when it is set."""
+        body = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00]) + b'Hi'
+        data = _doc_with_fonts('CG Times', 'LX Roman', body)
+        rtf = to_rtf(parse(data))
+        self.assertIn('LX Roman', rtf)
+        self.assertIn(r'\f1', rtf)
+
+    def test_rtf_format_b_run_has_f1(self):
+        """A Format B run must emit \\f1 in the RTF output."""
+        _FORMAT_B = bytes([0x22, 0x61, 0x2f, 0x0a, 0x0d])
+        _SOH = bytes([0x02, 0x01, 0x1e, 0x1e])
+        body = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00]) + _FORMAT_B + _SOH + b'Serif'
+        data = _doc_with_fonts('CG Times', 'LX Roman', body)
+        rtf = to_rtf(parse(data))
+        self.assertIn(r'\f1', rtf)
+        self.assertIn('Serif', rtf)
+
+    def test_rtf_sans_font_gets_fswiss(self):
+        """A font name containing 'Sans' must get the \\fswiss family tag."""
+        body = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00]) + b'Hi'
+        data = _doc_with_fonts('LX Sanserif', '', body)
+        rtf = to_rtf(parse(data))
+        self.assertIn(r'\fswiss', rtf)
+
+    def test_rtf_no_alt_font_no_f1(self):
+        """When slot 2 is empty no \\f1 font entry should appear."""
+        data = _doc(b'Hello')
+        rtf = to_rtf(parse(data))
+        self.assertNotIn(r'\f1', rtf)
 
 
 if __name__ == '__main__':

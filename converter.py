@@ -37,6 +37,16 @@ def save_txt(doc: Document, dest: Path) -> None:
 # RTF
 # ---------------------------------------------------------------------------
 
+def _rtf_font_family(name: str) -> str:
+    """Return the RTF font-family tag for a given font name."""
+    n = name.lower()
+    if any(w in n for w in ('sans', 'swiss', 'gothic', 'sanserif')):
+        return r'\fswiss'
+    if any(w in n for w in ('courier', 'prestige', 'condensed', 'mono')):
+        return r'\fmodern'
+    return r'\froman'
+
+
 def _rtf_escape(text: str) -> str:
     """Escape special RTF characters."""
     out = []
@@ -56,10 +66,13 @@ def _rtf_escape(text: str) -> str:
     return ''.join(out)
 
 
-def _rtf_run(run: 'TextRun') -> str:
-    """Wrap a TextRun's escaped text in RTF formatting codes."""
+def _rtf_run(run: 'TextRun', font_idx: int | None = None) -> str:
+    """Wrap a TextRun's escaped text in RTF formatting codes.
+
+    *font_idx* is the RTF font table index (``\\fN``) to apply to this run.
+    ``None`` means inherit the document default (``\\deff0``).
+    """
     if run.page_number:
-        # \chpgn emits the current page number at print/render time.
         content = r'\chpgn'
         if run.font_size is not None:
             return '{' + rf'\fs{int(run.font_size * 2)} ' + content + '}'
@@ -81,16 +94,27 @@ def _rtf_run(run: 'TextRun') -> str:
     prefix = ' '.join(pre) + ' ' if pre else ''
     suffix = ' ' + ' '.join(post) if post else ''
     content = prefix + escaped + suffix
-    if run.font_size is not None:
-        # Wrap in an RTF group so the font-size change is scoped to this run only.
-        return '{' + rf'\fs{int(run.font_size * 2)} ' + content + '}'
+    if run.font_size is not None or font_idx is not None:
+        # Wrap in an RTF group so font/size changes are scoped to this run only.
+        size_code = rf'\fs{int(run.font_size * 2)}' if run.font_size is not None else ''
+        font_code = rf'\f{font_idx}' if font_idx is not None else ''
+        return '{' + font_code + size_code + ' ' + content + '}'
     return content
 
 
-def _rtf_para(para: 'Paragraph') -> str:
-    """Render a single Paragraph as an RTF paragraph string (no trailing newline)."""
+def _rtf_para(para: 'Paragraph', font_map: 'dict[str, int] | None' = None) -> str:
+    """Render a single Paragraph as an RTF paragraph string (no trailing newline).
+
+    *font_map* maps font face names to RTF font table indices.  Runs whose
+    ``font_face`` appears in *font_map* receive an explicit ``\\fN`` switch.
+    """
     _rtf_align = {'centre': r'\qc', 'right': r'\qr', 'left': ''}
-    parts = [_rtf_run(run) for run in para.runs]
+
+    def _run(run):
+        idx = font_map.get(run.font_face) if (font_map and run.font_face) else None
+        return _rtf_run(run, idx)
+
+    parts = [_run(run) for run in para.runs]
     parts = [p for p in parts if p]
     if not parts:
         return ''
@@ -98,16 +122,11 @@ def _rtf_para(para: 'Paragraph') -> str:
     font_size = rf'\fs{int(para.font_size * 2)}' if para.font_size is not None else ''
     page_break = r'\page' if para.page_break_before else ''
     if para.footer_tab:
-        # Two-zone footer: centre tab at page midpoint, right tab at right margin.
-        # Hardcoded for A4 with 1-inch margins: printable width = 9026 twips.
-        # Zone 1 (page number): tabbed to centre. Zone 2 (reference): tabbed to right.
-        zone1 = [_rtf_run(r) for r in para.runs if r.page_number]
-        zone2 = [_rtf_run(r) for r in para.runs if not r.page_number and r.text.strip()]
+        zone1 = [_run(r) for r in para.runs if r.page_number]
+        zone2 = [_run(r) for r in para.runs if not r.page_number and r.text.strip()]
         content = r'\tab ' + ' '.join(zone1) + r' \tab ' + ' '.join(zone2)
         return page_break + r'\pard\tqc\tx4513\tqr\tx9026' + font_size + ' ' + content + r'\par'
     if para.inline_right_tab:
-        # Two-zone body paragraph: left text + \t + right-aligned text on one line.
-        # Right tab stop hardcoded for A4 with 1-inch margins: 9026 twips.
         return page_break + r'\pard\tqr\tx9026' + indent + font_size + ' ' + ' '.join(parts) + r'\par'
     align = _rtf_align.get(para.alignment, '')
     tab_stops = ''.join(rf'\tx{twips}' for twips in sorted(set(para.tab_stops)))
@@ -115,11 +134,23 @@ def _rtf_para(para: 'Paragraph') -> str:
 
 
 def to_rtf(doc: Document) -> str:
+    # Build font table from doc.fonts (slot 0 = \f0 default; slot 2 = \f1 alternate).
+    default_font = doc.fonts[0] if doc.fonts and doc.fonts[0] else 'Times New Roman'
+    alt_font = doc.fonts[2] if doc.fonts and len(doc.fonts) > 2 and doc.fonts[2] else ''
+
+    font_entries = [
+        rf'{{\f0{_rtf_font_family(default_font)}\fcharset0 {default_font};}}'
+    ]
+    font_map: dict[str, int] = {}
+    if alt_font:
+        font_entries.append(rf'{{\f1{_rtf_font_family(alt_font)}\fcharset0 {alt_font};}}')
+        font_map[alt_font] = 1
+
     rtf_header = (
         r'{\rtf1\ansi\deff0'
         r'\paperw11906\paperh16838'
         r'\margl1440\margr1440\margt1440\margb1440'
-        r'{\fonttbl{\f0\froman\fcharset0 Times New Roman;}}'
+        '{\\fonttbl' + ''.join(font_entries) + '}'
         r'{\colortbl ;}'
         '\n'
     )
@@ -127,19 +158,19 @@ def to_rtf(doc: Document) -> str:
     parts = []
 
     if doc.header and doc.header.plain_text().strip():
-        hdr = _rtf_para(doc.header)
+        hdr = _rtf_para(doc.header, font_map)
         if hdr:
             parts.append(r'{\header ' + hdr + '}\n')
 
     if doc.footer and doc.footer.plain_text().strip():
-        ftr = _rtf_para(doc.footer)
+        ftr = _rtf_para(doc.footer, font_map)
         if ftr:
             parts.append(r'{\footer ' + ftr + '}\n')
 
     for para in doc.paragraphs:
         if not para.plain_text().strip():
             continue
-        p = _rtf_para(para)
+        p = _rtf_para(para, font_map)
         if p:
             parts.append(p + '\n')
 
@@ -168,6 +199,10 @@ def save_docx(doc: Document, dest: Path) -> None:
         ) from e
 
     docx = DocxDocument()
+
+    # Set the document default font from the file's font table slot 0.
+    if doc.fonts and doc.fonts[0]:
+        docx.styles['Normal'].font.name = doc.fonts[0]
 
     _docx_align = {
         'centre': WD_ALIGN_PARAGRAPH.CENTER,
@@ -275,6 +310,7 @@ def save_docx(doc: Document, dest: Path) -> None:
             if not run.text.strip():
                 continue
             r = p.add_run(run.text)
+            if run.font_face:    r.font.name = run.font_face
             if run.bold:         r.bold = True
             if run.italic:       r.italic = True
             if run.underline:    r.underline = True
