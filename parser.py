@@ -5,6 +5,13 @@ Handles binary format decoding and text/formatting extraction.
 
 MAGIC = b'DOC'
 
+# Font table: 10 × 28-byte entries at a fixed offset in the file header.
+# Each entry: 1-byte name length + 23-byte name field + 4-byte trailing data.
+# Slot 0 = document default face; slot 2 = alternate face (inscription/serif).
+_FONT_TABLE_START      = 0x0138
+_FONT_TABLE_ENTRY_SIZE = 28
+_FONT_TABLE_SLOTS      = 10
+
 CTRL_PREFIX    = bytes([0x22, 0x61])        # "a — control sequence prefix
 WORD_SEP       = 0x02                        # inter-word space
 TAB_SEQ        = bytes([0x09, 0x05, 0x01])  # tab / citation indent
@@ -49,6 +56,27 @@ _HIGH_BYTE_MAP: dict[int, str] = {
 }
 
 
+def _parse_font_table(data: bytes) -> list[str]:
+    """Return the 10 font slot names from the file header font table.
+
+    Each entry is ``_FONT_TABLE_ENTRY_SIZE`` bytes: 1-byte name length,
+    23-byte name field, 4-byte trailing.  Empty / overlong entries return
+    an empty string.  Returns a list of 10 strings (empty string = unused slot).
+    """
+    fonts: list[str] = []
+    for slot in range(_FONT_TABLE_SLOTS):
+        off = _FONT_TABLE_START + slot * _FONT_TABLE_ENTRY_SIZE
+        if off + _FONT_TABLE_ENTRY_SIZE > len(data):
+            fonts.append('')
+            continue
+        nlen = data[off]
+        if nlen == 0 or nlen > 23:
+            fonts.append('')
+        else:
+            fonts.append(data[off + 1 : off + 1 + nlen].decode('latin-1', errors='replace'))
+    return fonts
+
+
 class ParseError(Exception):
     pass
 
@@ -57,7 +85,8 @@ class TextRun:
     """A run of plain text with optional inline formatting."""
     def __init__(self, text: str, italic: bool = False, bold: bool = False,
                  underline: bool = False, superscript: bool = False, subscript: bool = False,
-                 font_size: float | None = None, page_number: bool = False):
+                 font_size: float | None = None, page_number: bool = False,
+                 font_face: str | None = None):
         self.text = text
         self.italic = italic
         self.bold = bold
@@ -66,6 +95,7 @@ class TextRun:
         self.subscript = subscript
         self.font_size = font_size  # point size for this run (None = inherit paragraph/doc default)
         self.page_number = page_number  # True = emit a dynamic page number field, not literal text
+        self.font_face = font_face  # explicit face name (None = inherit document slot-0 default)
 
     def __repr__(self):
         flags = ', '.join(k for k, v in [
@@ -100,6 +130,7 @@ class Document:
         self.paragraphs: list[Paragraph] = []
         self.header: Paragraph | None = None
         self.footer: Paragraph | None = None
+        self.fonts: list[str] = [''] * _FONT_TABLE_SLOTS  # slot names from file header font table
 
     def plain_text(self) -> str:
         return '\n\n'.join(p.plain_text() for p in self.paragraphs if p.plain_text().strip())
@@ -503,6 +534,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     min_dp = 0x20 if prefix_byte == 0x22 else 0x00
 
     doc = Document()
+    doc.fonts = _parse_font_table(data)
     n = len(data)
 
     # Determine what type of section begins at the first content block.
@@ -560,6 +592,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     superscript = False
     subscript = False
     current_font_size: float | None = None
+    current_font_face: str | None = None  # set by Format B; None = document slot-0 default
     _last_para_alignment = 'left'
 
     def flush_run():
@@ -567,17 +600,19 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         text = ''.join(current_text)
         if text.strip():
             current_para.runs.append(
-                TextRun(text, italic, bold, underline, superscript, subscript, current_font_size)
+                TextRun(text, italic, bold, underline, superscript, subscript,
+                        current_font_size, font_face=current_font_face)
             )
         current_text = []
 
     def flush_para():
-        nonlocal current_para, _last_para_alignment
+        nonlocal current_para, _last_para_alignment, current_font_face
         flush_run()
         if not any(r.text.strip() or r.page_number for r in current_para.runs):
             was_page_break = current_para.page_break_before
             current_para = Paragraph()
             current_para.page_break_before = was_page_break
+            current_font_face = None
             return
         if current_section == 'header':
             doc.header = current_para
@@ -587,6 +622,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
             _last_para_alignment = current_para.alignment
             doc.paragraphs.append(current_para)
         current_para = Paragraph()
+        current_font_face = None
 
     while i < n:
         # --- Pre-body NUL terminator: 00 00 ---
@@ -1001,6 +1037,16 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         flush_para()
                     i = next_block if next_block >= 0 else n
                     continue
+                # Format B: 22 61 TYPE 0a 0d — font face switch to slot 2.
+                # Appears only in body paragraphs that use a non-default face (e.g.
+                # inscription text in Roman T / LX Roman).  Sets current_font_face for
+                # all runs in this paragraph; resets at flush_para().
+                if (i >= body_start
+                        and i + 4 < n
+                        and data[i + 3] == 0x0a and data[i + 4] == 0x0d
+                        and len(doc.fonts) > 2 and doc.fonts[2]):
+                    flush_run()
+                    current_font_face = doc.fonts[2]
                 # Alignment carry-through: LocoScript 2 centre alignment persists
                 # across paragraphs until a new alignment code appears.  Block headers
                 # that carry only SI-tab or right-tab zone metadata (B5=0x0f/0x10 with
