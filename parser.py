@@ -85,6 +85,7 @@ class Paragraph:
         self.font_size: float | None = None  # point size (None = document default)
         self.page_break_before: bool = False  # True when a page/section break precedes this paragraph
         self.footer_tab: bool = False        # True when footer has centre+right two-zone layout
+        self.inline_right_tab: bool = False  # True when 10 07/10 04 splits a body paragraph left+right
 
     def plain_text(self) -> str:
         return ''.join('[PAGE]' if r.page_number else r.text for r in self.runs)
@@ -273,8 +274,17 @@ def _find_body_start(data: bytes, ctrl_byte: int, first_para: int,
                     # also have B5=0x14 (e.g. BREWERS.5 body B3=0x42).
                     nxt = data.find(para_ctrl, pos + 3)
                     scan_end = nxt if nxt >= 0 else min(pos + 512, n)
-                    if data.find(b'\x00\x00', pos + 8, scan_end) >= 0:
-                        # NUL terminator found → still pre-body; keep scanning
+                    # Only look for the NUL terminator after the first printable
+                    # byte — binary metadata NULs precede text, pre-body zone
+                    # terminator NULs follow text.  If no printable byte is found
+                    # in the range, the entire range is binary metadata and cannot
+                    # be a pre-body NUL terminator.
+                    _first_printable = next(
+                        (k for k in range(pos + 8, scan_end) if 0x20 <= data[k] <= 0x7e),
+                        -1)
+                    _nul_search_from = _first_printable if _first_printable >= 0 else scan_end
+                    if data.find(b'\x00\x00', _nul_search_from, scan_end) >= 0:
+                        # NUL terminator found after text → still pre-body; keep scanning
                         next_pos = data.find(para_ctrl, pos + 3)
                         if next_pos < 0:
                             break
@@ -346,6 +356,17 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
                 i += 1
                 if i + 1 < n and data[i] == data[i + 1]:
                     i += 2
+        elif (i + 9 < n and data[i+5] == 0x14 and data[i+6] == 0x78
+              and data[i+7] == 0x00 and data[i+8] == 0x10 and data[i+9] == 0x04):
+            # Compound PASSCHENDAELE variant: font-size bytes (14 78 00) immediately
+            # before 10 04 right-tab code.  Default 8-byte skip lands mid-sequence,
+            # causing "=="-style artefacts.  Skip 10 bytes, then strip the prefix byte
+            # and any following doubled pair (e.g. 22 3d 3d → prefix_byte + 3d 3d).
+            i += 10
+            if i < n and data[i] == prefix_byte:
+                i += 1
+            if i + 1 < n and data[i] == data[i + 1] and data[i] >= min_dp:
+                i += 2
         elif (i + 10 < n and data[i+6] == 0x78 and data[i+7] == 0x00 and data[i+8] in (0x01, 0x0a)
               and data[i+9] == data[i+10] and data[i+9] >= 0x20
               and not (data[i+3] >= 0x80 and data[i+4] == 0x0e)):
@@ -387,11 +408,11 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
         elif i + 7 < n and data[i+5] == 0x0a and data[i+6] == 0x09 and data[i+7] == 0x00:
             # Tab-indent variant: 2 param bytes + 0a 09 00 01 + indent pair = 11 bytes.
             i += 11
-        elif (prefix_byte != 0x22 and i + 6 < n
-              and data[i+5] == 0x11 and data[i+6] == 0x06):
-            # Centre-alignment marker at B5/B6 of block header in 1e-prefix variant
-            # files.  Skip 5 bytes (the block header up to B4) and leave 11 06 for
-            # the main loop to apply the alignment to the current paragraph.
+        elif i + 6 < n and data[i+5] == 0x11 and data[i+6] == 0x06:
+            # Centre-alignment marker at B5/B6 of block header.  Skip 5 bytes
+            # (the block header up to B4) and leave 11 06 for the main loop to
+            # apply the alignment to the current paragraph.  Confirmed in both
+            # 1e-prefix (BINDINDX) and 22-prefix (MEMORIAL.002, HENCOTES) files.
             i += 5
         elif i + 7 < n and data[i+7] == 0x0f:
             # B7 is an 0f SI byte — part of an 0f XX sequence (tab, hanging indent,
@@ -406,6 +427,11 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
             # Another control prefix starts at the indent-byte position;
             # skip 7 bytes and let the main loop handle that control sequence.
             i += 7
+        elif i + 9 < n and data[i+5] == 0x10 and data[i+6] == 0x04:
+            # Right-tab zone header: 22 XX 0b B3 B4 10 04 22 3d XX.
+            # Default 8-byte skip lands at 3d XX, emitting '=' artefacts.
+            # Skip 10 bytes to clear the full 10 04 22 3d XX sequence.
+            i += 10
         elif i + 8 < n and data[i+5] == 0x0f and data[i+6] == 0x04:
             # SI tab indicator embedded in paragraph header (B5=0x0f B6=0x04):
             # structure is 22 XX 0b B3 B4 0f 04 B1 B2 [01 PP PP] → content.
@@ -534,6 +560,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
     superscript = False
     subscript = False
     current_font_size: float | None = None
+    _last_para_alignment = 'left'
 
     def flush_run():
         nonlocal current_text
@@ -545,7 +572,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         current_text = []
 
     def flush_para():
-        nonlocal current_para
+        nonlocal current_para, _last_para_alignment
         flush_run()
         if not any(r.text.strip() or r.page_number for r in current_para.runs):
             was_page_break = current_para.page_break_before
@@ -557,6 +584,7 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         elif current_section == 'footer':
             doc.footer = current_para
         else:
+            _last_para_alignment = current_para.alignment
             doc.paragraphs.append(current_para)
         current_para = Paragraph()
 
@@ -677,7 +705,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 i += 1
             # B1 is the first printable byte: the indent/tab column in scale pitch units.
             # Record it as an explicit tab stop (twips) before consuming both B1 and B2.
-            if is_tab and not is_structural and i < n and 0x20 <= data[i] <= 0x7E:
+            if (is_tab and not is_structural and i < n and 0x20 <= data[i] <= 0x7E
+                    and current_para.alignment != 'centre'):
                 current_para.tab_stops.append(data[i] * _twips_per_unit)
             # Skip up to 2 printable tab-stop encoding bytes (B1 and B2)
             for _ in range(2):
@@ -931,6 +960,18 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         current_section = 'footer'
                     elif initial_section != 'body':
                         current_section = initial_section
+                    # Pre-body structural transition: 22 XX 0b e8 05 blocks in the
+                    # pre-body zone are empty section-boundary markers.  The 8-byte
+                    # default skip leaves binary metadata (e.g. 0x60 '`' bytes) that
+                    # would be emitted as spurious header text.  Jump directly to the
+                    # next para_ctrl to consume the binary payload cleanly.
+                    if (i < body_start and i + 4 < n
+                            and data[i + 3] == 0xe8 and data[i + 4] == 0x05):
+                        flush_run()
+                        flush_para()
+                        next_ctrl = data.find(para_ctrl, i + 3)
+                        i = next_ctrl if next_ctrl >= 0 else n
+                        continue
                     # B3=0x00: layout/transition block, no body text. Always applies
                     # in the pre-body zone. In the body zone of 1e-prefix files,
                     # B3=0x00, B4=0x00, B5=0x14 together identify a section-boundary
@@ -947,6 +988,36 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         next_ctrl = data.find(para_ctrl, i + 3)
                         i = next_ctrl if next_ctrl >= 0 else n
                         continue
+                # Fix 6: self-referential sequence (22 XX XX) — check whether a
+                # paragraph break (0f 02) immediately precedes the target block.
+                # The standard jump in _skip_ctrl_sequence bypasses the 0f bytes,
+                # so we intercept here and flush before jumping.
+                if ctrl_type == ctrl_byte:
+                    next_block = data.find(para_ctrl, i + 3)
+                    if (next_block >= 2
+                            and data[next_block - 2] == 0x0f
+                            and data[next_block - 1] == 0x02):
+                        flush_run()
+                        flush_para()
+                    i = next_block if next_block >= 0 else n
+                    continue
+                # Alignment carry-through: LocoScript 2 centre alignment persists
+                # across paragraphs until a new alignment code appears.  Block headers
+                # that carry only SI-tab or right-tab zone metadata (B5=0x0f/0x10 with
+                # B6=0x04, or the compound 14 78 00 10 04 variant) embed no explicit
+                # alignment signal; they inherit the previous body paragraph's alignment.
+                # Confirmed: MEMORIAL.002 A–H entries (0f 04 headers) and 1915–1918
+                # war-service entries (10 04 and 14 78 00 10 04 headers) all follow
+                # centred paragraphs and must themselves be centred.
+                _carry_align_block = (
+                    ctrl_type == 0x0b and i + 6 < n and (
+                        (data[i + 5] == 0x0f and data[i + 6] == 0x04) or
+                        (data[i + 5] == 0x10 and data[i + 6] == 0x04) or
+                        (i + 9 < n and data[i + 5] == 0x14 and data[i + 6] == 0x78
+                         and data[i + 7] == 0x00 and data[i + 8] == 0x10
+                         and data[i + 9] == 0x04)
+                    )
+                )
                 i = _skip_ctrl_sequence(data, i, ctrl_byte, prefix_byte)
                 i_after_skip = i
                 # Skip trailing indent metadata: 00 01 + doubled pair
@@ -971,6 +1042,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     _pending_large_font = 0.0  # 14.4pt is the heading font; suppress for sub-entries
                 if _pending_large_font:
                     current_para.font_size = _pending_large_font
+                if _carry_align_block and current_para.alignment == 'left':
+                    current_para.alignment = _last_para_alignment
             continue
 
         # --- Word separator: 02 ---
@@ -993,7 +1066,14 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                 flush_run()
                 current_para.footer_tab = True
             else:
-                current_para.alignment = 'right'
+                has_content = bool(current_text) or bool(current_para.runs)
+                if has_content:
+                    # Mid-paragraph: left zone already accumulated; begin right zone.
+                    flush_run()
+                    current_para.inline_right_tab = True
+                    current_text.append('\t')
+                else:
+                    current_para.alignment = 'right'
             i += 2
             continue
 
@@ -1041,6 +1121,25 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         if 0x20 <= data[i] <= 0x7E:
             current_text.append(chr(data[i]))
             i += 1
+            continue
+
+        # --- Column/layout spec: 0c XX 01 YY 01 ZZ (6 bytes) ---
+        # Structural column/section layout metadata: FF + printable byte + SOH marks
+        # the start.  The printable byte (e.g. '$', '#') would otherwise be emitted
+        # as text.  Distinguishing feature: 0c followed by a printable byte then 0x01
+        # (vs. legitimate 0c usage where the next byte is NOT 0x01).
+        if (data[i] == 0x0c and i + 2 < n
+                and 0x20 <= data[i + 1] <= 0x7e and data[i + 2] == 0x01):
+            i += 6
+            continue
+
+        # --- SOH doubled-pair structural marker: 01 XX XX (3 bytes) ---
+        # SOH-prefixed doubled-pair is a structural indent/layout marker left behind
+        # when a variable-length skip stops at a WORD_SEP before consuming it.
+        # Both XX bytes must be identical and printable.
+        if (data[i] == 0x01 and i + 2 < n
+                and data[i + 1] == data[i + 2] and data[i + 1] >= min_dp):
+            i += 3
             continue
 
         # --- Everything else: skip ---

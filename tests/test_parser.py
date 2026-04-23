@@ -2603,5 +2603,360 @@ class TestPageNumberToken(unittest.TestCase):
         self.assertIn('text', result)
 
 
+# ---------------------------------------------------------------------------
+# MEMORIAL.002 fix tests (feature/memorial-002-fixes)
+# ---------------------------------------------------------------------------
+
+class TestBodyStartNulInBinaryMetadata(unittest.TestCase):
+    """Fix 1: _find_body_start must not treat binary-metadata NULs (which precede
+    text) as a pre-body NUL terminator.  Pre-body terminator NULs follow text;
+    binary metadata NULs precede it.
+
+    We test _find_body_start directly because synthetic test data is too short
+    to reach the layout-section marker at 0x5A0 that sets initial_section.
+    """
+
+    def _make_scan_data(self, structural_b3: int, candidate_middle: bytes,
+                        body_b3: int = 0x42) -> tuple[bytes, int, int]:
+        """Return (data, first_para_offset, expected_body_offset)."""
+        structural = bytes([0x22, 0x61, 0x0b, structural_b3, 0x0e, 0x00, 0x00, 0x00])
+        candidate = bytes([0x22, 0x61, 0x0b, 0x13, 0x02, 0x14, 0x00, 0x00]) + candidate_middle
+        body_blk = bytes([0x22, 0x61, 0x0b, body_b3, 0x02, 0x00, 0x00, 0x00])
+        data = structural + candidate + body_blk + b'body'
+        first_para = 0
+        expected_body = len(structural) + len(candidate)
+        return data, first_para, expected_body
+
+    def test_nul_before_printable_does_not_disqualify(self):
+        """00 00 before first printable byte must NOT disqualify the block.
+
+        B3 must be < 0x80 (low-B3 candidate) for the NUL check to fire.
+        The 00 00 bytes are at positions before 'P' (binary metadata),
+        so the fixed code must NOT find them after the first printable byte.
+        """
+        structural = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x00, 0x00, 0x00])
+        # B3=0x3a (<0x80), B5=0x14 → seen_high_b3 triggers NUL check.
+        # Post-header bytes: 00 00 'P' 'l' — NUL precedes 'P' → binary metadata.
+        candidate = bytes([0x22, 0x61, 0x0b, 0x3a, 0x02, 0x14, 0x00, 0x00,
+                           0x00, 0x00, 0x50, 0x6c])  # 00 00 'P' 'l'
+        body_blk = bytes([0x22, 0x61, 0x0b, 0x42, 0x02, 0x00, 0x00, 0x00])
+        data = structural + candidate + body_blk + b'body'
+        body_start = _find_body_start(data, 0x61, 0, 'header')
+        # NUL precedes text → not a terminator → candidate accepted as body_start
+        self.assertEqual(body_start, len(structural))
+
+    def test_nul_after_printable_still_disqualifies(self):
+        """00 00 after printable text must still disqualify the block (pre-body footer)."""
+        structural = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x00, 0x00, 0x00])
+        # B3=0x13 (<0x80), B5=0x14 → seen_high_b3 triggers NUL check.
+        # Post-header bytes: 'hdr' 00 00 → NUL follows text → pre-body terminator.
+        candidate = bytes([0x22, 0x61, 0x0b, 0x13, 0x02, 0x14, 0x00, 0x00,
+                           0x68, 0x64, 0x72, 0x00, 0x00])  # 'hdr' 00 00
+        body_blk = bytes([0x22, 0x61, 0x0b, 0x42, 0x02, 0x00, 0x00, 0x00])
+        data = structural + candidate + body_blk + b'body'
+        body_start = _find_body_start(data, 0x61, 0, 'header')
+        # NUL follows text → pre-body terminator → candidate skipped; body_start = body_blk
+        self.assertEqual(body_start, len(structural) + len(candidate))
+
+
+class TestInlineRightTab(unittest.TestCase):
+    """Fix 2: 10 07 / 10 04 after accumulated body content must set
+    inline_right_tab=True and emit a tab; when no content precedes it,
+    set alignment='right' as before."""
+
+    def _make_body(self, left_text: bytes, right_text: bytes, code: int = 0x07) -> bytes:
+        """One paragraph: left text + 10 code + right text."""
+        return (MAGIC + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + left_text
+                + bytes([0x10, code])
+                + right_text)
+
+    def test_10_07_mid_para_sets_inline_right_tab(self):
+        data = self._make_body(b'Left', b'Right')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertTrue(para.inline_right_tab)
+        self.assertFalse(para.footer_tab)
+        self.assertEqual(para.alignment, 'left')
+
+    def test_10_04_mid_para_sets_inline_right_tab(self):
+        data = self._make_body(b'Left', b'Right', code=0x04)
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertTrue(para.inline_right_tab)
+
+    def test_mid_para_text_contains_tab(self):
+        data = self._make_body(b'Left', b'Right')
+        doc = parse(data)
+        self.assertIn('\t', doc.paragraphs[0].plain_text())
+
+    def test_10_07_no_prior_content_sets_alignment(self):
+        """10 07 at paragraph start (no prior content) must set alignment='right'."""
+        data = (MAGIC + PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+                + bytes([0x10, 0x07]) + b'Right')
+        doc = parse(data)
+        para = doc.paragraphs[0]
+        self.assertEqual(para.alignment, 'right')
+        self.assertFalse(para.inline_right_tab)
+
+    def test_rtf_inline_right_tab_uses_tqr(self):
+        data = self._make_body(b'Left', b'Right')
+        doc = parse(data)
+        rtf = to_rtf(doc)
+        self.assertIn(r'\tqr', rtf)
+        self.assertIn(r'\tx9026', rtf)
+
+    def test_footer_10_07_still_sets_footer_tab(self):
+        """10 07 in footer context must still set footer_tab, not inline_right_tab."""
+        # Build a file with a footer section containing 10 07 after page number.
+        # Re-use the existing footer-tab test pattern.
+        footer_text = (b'\x11\x06'          # centre align
+                       + b'\x07\x06\x01\x04\x04\x3d\x3d\x02\x06'  # page number token
+                       + b'\x10\x07'         # right-align zone separator
+                       + b'Ref')
+        # We build a file with a header block and a footer block.
+        hdr_block = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x00, 0x00, 0x00])
+        ftr_block = bytes([0x22, 0x61, 0x0b, 0x10, 0x02, 0x14, 0x00, 0x00])
+        ftr_nul = b'\x00\x00'
+        body_block = bytes([0x22, 0x61, 0x0b, 0x42, 0x02, 0x00, 0x00, 0x00])
+        data = MAGIC + hdr_block + ftr_block + footer_text + ftr_nul + body_block + b'body'
+        doc = parse(data)
+        if doc.footer:
+            self.assertTrue(doc.footer.footer_tab)
+            self.assertFalse(doc.footer.inline_right_tab)
+
+
+class TestSohDoubledPairSkip(unittest.TestCase):
+    """Fix 3: 01 XX XX (SOH + identical printable pair) must be consumed silently."""
+
+    def test_01_22_22_not_emitted(self):
+        """01 22 22 structural marker must not produce '\"\"' in output."""
+        body = b'\x01\x22\x22\x02THE'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertNotIn('""', result)
+        self.assertIn('THE', result)
+
+    def test_01_3d_3d_not_emitted(self):
+        body = b'\x01\x3d\x3d\x02text'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertNotIn('==', result)
+        self.assertIn('text', result)
+
+    def test_non_identical_pair_not_consumed(self):
+        """01 XX YY where XX != YY must NOT be consumed by this handler."""
+        body = b'\x01\x41\x42remaining'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertIn('AB', result)
+
+
+class TestColumnSpecSkip(unittest.TestCase):
+    """Fix 4: 0c XX 01 YY 01 ZZ (6-byte column/layout spec) must be consumed."""
+
+    def test_0c_24_01_64_01_00_not_emitted(self):
+        """0c 24 01 64 01 00 must not produce '$d' in output."""
+        body = b'\x0c\x24\x01\x64\x01\x00\x02AT'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertNotIn('$', result)
+        self.assertNotIn('d', result)
+        self.assertIn('AT', result)
+
+    def test_0c_23_01_00_01_00_not_emitted(self):
+        body = b'\x0c\x23\x01\x00\x01\x00\x02text'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertNotIn('#', result)
+        self.assertIn('text', result)
+
+    def test_0c_not_followed_by_01_not_consumed(self):
+        """0c followed by printable byte NOT followed by 0x01 must not be skipped."""
+        # 0c 54 48 45 = FF 'T' 'H' 'E' — legitimate text after FF
+        body = b'\x0c\x54\x48\x45'  # 0c + 'THE'
+        data = _doc(body)
+        result = _plain(data)
+        self.assertIn('THE', result)
+
+
+class TestRightTabZoneHeaderSkip(unittest.TestCase):
+    """Fix 5: 22 61 0b B3 B4 10 04 22 3d XX blocks must skip 10 bytes,
+    eliminating '=' artefacts on right-side tabbed entries."""
+
+    def test_b5_10_b6_04_no_equals_artefact(self):
+        """Block with B5=0x10 B6=0x04 must not emit '=' from the trailing 3d byte."""
+        # 22 61 0b B3 B4 10 04 22 3d 22 → 10-byte skip → content
+        block = bytes([0x22, 0x61, 0x0b, 0x42, 0x02, 0x10, 0x04, 0x22, 0x3d, 0x22])
+        payload = b'1915'
+        data = MAGIC + block + payload
+        result = _plain(data)
+        self.assertNotIn('=', result)
+        self.assertIn('1915', result)
+
+    def test_b5_10_b6_04_with_italic_on(self):
+        """After the 10-byte skip the following 08 05 01 italic-on must work."""
+        block = bytes([0x22, 0x61, 0x0b, 0x42, 0x02, 0x10, 0x04, 0x22, 0x3d, 0x22])
+        italic_on = bytes([0x08, 0x05, 0x01, 0x05, 0x05])
+        payload = b'YPRES'
+        data = MAGIC + block + italic_on + payload
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs]
+        self.assertIn('YPRES', ' '.join(texts))
+        self.assertNotIn('=', ' '.join(texts))
+
+
+class TestSelfRefSkipPrecedingParaBrk(unittest.TestCase):
+    """Fix 6: when a self-referential 22 61 61 sequence jumps to a 22 61 0b block
+    that is immediately preceded by 0f 02, a paragraph break must be emitted."""
+
+    def test_0f_02_before_target_block_splits_paragraph(self):
+        """22 61 61 followed by 0f 02 + para_ctrl must produce two paragraphs."""
+        # Structure:
+        #   opening 22 61 0b block (body_start)
+        #   text "LEFT"
+        #   22 61 61 (self-ref) → will jump to next 22 61 0b
+        #   [filler bytes] 0f 02 22 61 0b [8 bytes]
+        #   text "RIGHT"
+        opening = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        self_ref = bytes([0x22, 0x61, 0x61])
+        para_brk = bytes([0x0f, 0x02])
+        target_block = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + opening + b'LEFT' + self_ref + para_brk + target_block + b'RIGHT'
+        paras = _paras(data)
+        self.assertEqual(len(paras), 2)
+        self.assertIn('LEFT', paras[0])
+        self.assertIn('RIGHT', paras[1])
+
+    def test_no_0f_02_before_target_does_not_split(self):
+        """22 61 61 without a 0f 02 before target must not create a spurious break."""
+        opening = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        self_ref = bytes([0x22, 0x61, 0x61])
+        target_block = PARA_CTRL + bytes([0x00, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + opening + b'LEFT' + self_ref + target_block + b'RIGHT'
+        paras = _paras(data)
+        self.assertEqual(len(paras), 1)
+
+
+class TestCompoundPasschendaeleBlockSkip(unittest.TestCase):
+    """Fix 7: 22 61 0b B3 B4 14 78 00 10 04 22 3d 3d compound block must skip
+    10 bytes + prefix byte + doubled pair, eliminating '\"==' artefacts."""
+
+    def test_14_78_00_10_04_no_artefacts(self):
+        """Compound block must not emit '\"', '==' or set alignment=right."""
+        # 22 61 0b f8 01 14 78 00 10 04 22 3d 3d → skip 10 + 22 + 3d 3d → content
+        block = bytes([0x22, 0x61, 0x0b, 0xf8, 0x01, 0x14, 0x78, 0x00, 0x10, 0x04,
+                       0x22, 0x3d, 0x3d])
+        payload = b'PASSCHENDAELE'
+        data = MAGIC + block + payload
+        doc = parse(data)
+        texts = [p.plain_text() for p in doc.paragraphs]
+        combined = ' '.join(texts)
+        self.assertIn('PASSCHENDAELE', combined)
+        self.assertNotIn('==', combined)
+        self.assertNotIn('"', combined)
+
+    def test_14_78_00_10_04_alignment_not_right(self):
+        """10 04 inside the compound block must NOT set alignment=right."""
+        block = bytes([0x22, 0x61, 0x0b, 0xf8, 0x01, 0x14, 0x78, 0x00, 0x10, 0x04,
+                       0x22, 0x3d, 0x3d])
+        data = MAGIC + block + b'text'
+        doc = parse(data)
+        for para in doc.paragraphs:
+            if para.plain_text().strip():
+                self.assertNotEqual(para.alignment, 'right')
+
+
+class TestCentreAlignIn22PrefixBlockHeader(unittest.TestCase):
+    """Fix 9: 22 61 0b B3 B4 11 06 ... must apply centre alignment in 22-prefix files."""
+
+    def test_11_06_at_b5_b6_sets_centre_alignment(self):
+        """22 61 0b B3 B4 11 06 ... must produce alignment='centre'."""
+        block = bytes([0x22, 0x61, 0x0b, 0x18, 0x03, 0x11, 0x06])
+        data = MAGIC + block + b'HEADING'
+        doc = parse(data)
+        content = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertTrue(content, 'expected at least one content paragraph')
+        self.assertEqual(content[0].alignment, 'centre')
+
+    def test_11_06_at_b5_b6_emits_correct_text(self):
+        """Text following the block must not contain artefacts."""
+        block = bytes([0x22, 0x61, 0x0b, 0x18, 0x03, 0x11, 0x06])
+        data = MAGIC + block + b'HEADING'
+        doc = parse(data)
+        combined = ' '.join(p.plain_text() for p in doc.paragraphs)
+        self.assertIn('HEADING', combined)
+
+    def test_default_block_without_11_06_remains_left_aligned(self):
+        """Standard 22 61 0b block without 11 06 must remain left-aligned."""
+        block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00])
+        data = MAGIC + block + b'text'
+        doc = parse(data)
+        content = [p for p in doc.paragraphs if p.plain_text().strip()]
+        self.assertTrue(content)
+        self.assertNotEqual(content[0].alignment, 'centre')
+
+
+class TestAlignmentCarryThrough(unittest.TestCase):
+    """Fix 10: 0f 04 and 10 04 block headers carry alignment from the previous paragraph."""
+
+    # Para break + centred block: 22 61 0b B3 B4 11 06 + text + 0f 02 + next block
+    _CENTRED_BLOCK = bytes([0x22, 0x61, 0x0b, 0x08, 0x04, 0x11, 0x06]) + b'HEADING'
+    _PARA_SEP = bytes([0x0f, 0x02])
+
+    def _make(self, next_block_bytes: bytes) -> list:
+        """Build data with a centred para followed by a block using next_block_bytes."""
+        data = MAGIC + self._CENTRED_BLOCK + self._PARA_SEP + next_block_bytes + b'text'
+        return parse(data).paragraphs
+
+    def test_0f_04_block_inherits_centre_alignment(self):
+        """22 61 0b B3 B4 0f 04 B1 ctrl 01 XX XX after a centred para must be centred."""
+        next_block = bytes([0x22, 0x61, 0x0b, 0x88, 0x02, 0x0f, 0x04, 0x3b, 0x61, 0x01, 0x0b, 0x0b])
+        paras = self._make(next_block)
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'centre')
+
+    def test_10_04_block_inherits_centre_alignment(self):
+        """22 61 0b B3 B4 10 04 22 3d XX after a centred para must be centred."""
+        next_block = bytes([0x22, 0x61, 0x0b, 0x50, 0x01, 0x10, 0x04, 0x22, 0x3d, 0x1d])
+        paras = self._make(next_block)
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'centre')
+
+    def test_0f_04_after_left_para_stays_left(self):
+        """0f 04 block after a left-aligned para must remain left-aligned."""
+        left_block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00]) + b'left'
+        next_block = bytes([0x22, 0x61, 0x0b, 0x88, 0x02, 0x0f, 0x04, 0x3b, 0x61, 0x01, 0x0b, 0x0b])
+        data = MAGIC + left_block + self._PARA_SEP + next_block + b'text'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertGreaterEqual(len(content), 2)
+        self.assertEqual(content[1].alignment, 'left')
+
+    def test_0f_04_content_tab_stop_not_recorded_for_centred_para(self):
+        """0f 04 inside a centred paragraph must NOT record a tab stop."""
+        centred_block = bytes([0x22, 0x61, 0x0b, 0x50, 0x01, 0x10, 0x04, 0x22, 0x3d, 0x1d])
+        tab_seq = bytes([0x0f, 0x04, 0x3e, 0x61])  # 0f 04 B1=0x3e B2=ctrl_byte
+        data = MAGIC + self._CENTRED_BLOCK + self._PARA_SEP + centred_block + b'date' + tab_seq + b'place'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        # The centred paragraph following HEADING must have no recorded tab stops
+        centred_paras = [p for p in content if p.alignment == 'centre' and 'place' in p.plain_text()]
+        self.assertTrue(centred_paras, 'expected a centred para containing place text')
+        self.assertEqual(centred_paras[0].tab_stops, [])
+
+    def test_0f_04_content_tab_stop_recorded_for_left_para(self):
+        """0f 04 inside a left-aligned paragraph must still record its tab stop."""
+        left_block = bytes([0x22, 0x61, 0x0b, 0x64, 0x00, 0x00, 0x00, 0x00])
+        tab_seq = bytes([0x0f, 0x04, 0x3e, 0x61])
+        data = MAGIC + left_block + b'date' + tab_seq + b'place'
+        paras = parse(data).paragraphs
+        content = [p for p in paras if p.plain_text().strip()]
+        self.assertTrue(content)
+        self.assertNotEqual(content[0].tab_stops, [])
+
+
 if __name__ == '__main__':
     unittest.main()
