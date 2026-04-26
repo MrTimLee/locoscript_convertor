@@ -12,6 +12,7 @@ from parser import ParseError, parse
 
 LOG_FILENAME = 'DocConvertor-Error.log'
 OUTPUT_FORMATS = ['.txt', '.rtf', '.docx']
+DOC_MAGIC = b'DOC'
 
 
 class App(tk.Tk):
@@ -43,6 +44,8 @@ class App(tk.Tk):
 
         btn_frame = ttk.Frame(file_frame)
         btn_frame.pack(side='left', fill='y', padx=6, pady=6)
+        self._shadow_btn = ttk.Button(btn_frame, text='Shadow Copy Directory…', command=self._start_shadow_copy)
+        self._shadow_btn.pack(fill='x', pady=2)
         ttk.Button(btn_frame, text='Add files…', command=self._add_files).pack(fill='x', pady=2)
         ttk.Button(btn_frame, text='Remove selected', command=self._remove_selected).pack(fill='x', pady=2)
         ttk.Button(btn_frame, text='Clear all', command=self._clear_files).pack(fill='x', pady=2)
@@ -98,7 +101,7 @@ class App(tk.Tk):
         self._files.clear()
 
     # ------------------------------------------------------------------
-    # Conversion
+    # Batch conversion
     # ------------------------------------------------------------------
 
     def _start_conversion(self):
@@ -106,6 +109,7 @@ class App(tk.Tk):
             messagebox.showwarning('No files', 'Please add at least one file to convert.')
             return
         self._convert_btn.config(state='disabled')
+        self._shadow_btn.config(state='disabled')
         threading.Thread(target=self._run_conversion, daemon=True).start()
 
     def _run_conversion(self):
@@ -154,6 +158,128 @@ class App(tk.Tk):
 
         elapsed = time.monotonic() - start_time
         self._finish(total, failed, skipped, warned, elapsed)
+
+    # ------------------------------------------------------------------
+    # Shadow copy
+    # ------------------------------------------------------------------
+
+    def _start_shadow_copy(self):
+        src = filedialog.askdirectory(title='Select source folder for shadow copy')
+        if not src:
+            return
+        src_root = Path(src)
+        dest_root = src_root.parent / f'Converted_{src_root.name}'
+        if dest_root.exists():
+            if not messagebox.askyesno(
+                'Folder exists',
+                f'"{dest_root.name}" already exists.\nProceed anyway?'
+            ):
+                return
+        self._convert_btn.config(state='disabled')
+        self._shadow_btn.config(state='disabled')
+        threading.Thread(target=self._run_shadow_copy, args=(src_root, dest_root), daemon=True).start()
+
+    def _run_shadow_copy(self, src_root: Path, dest_root: Path):
+        fmt = self._fmt_var.get()
+        log_path = Path(__file__).parent / LOG_FILENAME
+        self._overwrite_policy = None
+        start_time = time.monotonic()
+
+        # Phase 1: scan — identify DOC files, warn on everything else
+        self._set_status(f'Scanning {src_root.name}…')
+        self._progress.config(maximum=1, value=0)
+
+        doc_files: list[Path] = []
+        non_doc = 0
+
+        for path in sorted(src_root.rglob('*')):
+            if not path.is_file():
+                continue
+            try:
+                magic = path.read_bytes()[:3]
+            except Exception:
+                magic = b''
+            if magic == DOC_MAGIC:
+                doc_files.append(path)
+            else:
+                non_doc += 1
+                log_warning(log_path, path.name,
+                             f'Not a Locoscript 2 DOC file — skipped (shadow copy of {src_root.name})')
+
+        # Phase 2: convert each DOC file into the mirror tree
+        total = len(doc_files)
+        failed = 0
+        skipped = 0
+        warned = 0
+        self._progress.config(maximum=max(total, 1), value=0)
+
+        for i, src in enumerate(doc_files, start=1):
+            self._set_status(f'Converting {i} of {total}: {src.name}')
+            rel = src.relative_to(src_root)
+            dest = dest_root / rel.with_name(rel.name + fmt)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            if dest.exists():
+                overwrite = self._ask_overwrite(dest, batch=True)
+                if not overwrite:
+                    skipped += 1
+                    self._step_progress(i)
+                    continue
+
+            try:
+                data = src.read_bytes()
+                doc = parse(data)
+                convert(doc, dest)
+                output_size = dest.stat().st_size
+                if len(data) > 0 and output_size < len(data) * 0.1:
+                    warned += 1
+                    log_warning(log_path, src.name,
+                                 f'Output is suspiciously small ({output_size} bytes vs {len(data)} bytes input)'
+                                 ' — possible parse failure')
+            except Exception as e:
+                failed += 1
+                log_error(log_path, src.name, e)
+
+            self._step_progress(i)
+
+        elapsed = time.monotonic() - start_time
+        self._finish_shadow(total, failed, skipped, warned, non_doc, elapsed)
+
+    def _finish_shadow(self, total: int, failed: int, skipped: int, warned: int,
+                       non_doc: int, elapsed: float):
+        self._convert_btn.config(state='normal')
+        self._shadow_btn.config(state='normal')
+        succeeded = total - failed - skipped
+        time_note = f'  Time taken: {elapsed:.1f}s'
+
+        parts = [f'{succeeded} file(s) converted.']
+        if skipped:
+            parts.append(f'{skipped} skipped (overwrite).')
+        if failed:
+            parts.append(f'{failed} failed — see {LOG_FILENAME} for details.')
+        if warned:
+            parts.append(f'{warned} produced suspiciously small output — see {LOG_FILENAME}.')
+        if non_doc:
+            parts.append(f'{non_doc} non-Locoscript file(s) skipped — see {LOG_FILENAME}.')
+
+        msg = '\n'.join(parts) + time_note
+        if failed > 0 or warned > 0:
+            self.after(0, lambda: messagebox.showwarning('Shadow copy complete', msg))
+        else:
+            self.after(0, lambda: messagebox.showinfo('Shadow copy complete', msg))
+
+        status_parts = [f'{succeeded} converted']
+        if skipped:
+            status_parts.append(f'{skipped} skipped')
+        if failed:
+            status_parts.append(f'{failed} failed')
+        if non_doc:
+            status_parts.append(f'{non_doc} non-DOC skipped')
+        self._set_status(f'Shadow copy done. {", ".join(status_parts)}. ({elapsed:.1f}s)')
+
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
 
     def _ask_overwrite(self, dest: Path, batch: bool = False) -> bool:
         """Ask the user whether to overwrite an existing file (called from worker thread).
@@ -211,6 +337,7 @@ class App(tk.Tk):
 
     def _finish(self, total: int, failed: int, skipped: int = 0, warned: int = 0, elapsed: float = 0.0):
         self._convert_btn.config(state='normal')
+        self._shadow_btn.config(state='normal')
         succeeded = total - failed - skipped
         skip_note = f', {skipped} skipped' if skipped else ''
         time_note = f'  Time taken: {elapsed:.1f}s'

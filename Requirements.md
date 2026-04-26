@@ -94,14 +94,15 @@ An optional mode in the application that mirrors an entire folder structure, pro
 
 - The application shall provide a "Create processed shadow copy" option in the UI
 - The user selects a source folder (rather than individual files)
-- The application traverses the full folder structure recursively, locating all Locoscript 2 files (identified by their `DOC` magic bytes, regardless of file extension)
+- The application traverses the full folder structure recursively, inspecting every file
+- Files identified by their `DOC` magic bytes (regardless of file extension) are converted; all other files are logged as `[WARNING]` entries in the error log and skipped
 - A mirror folder structure is created at the same level as the source folder, with the top-level folder named by prepending "Converted_" to the source folder name (e.g. source folder "Archive" → output folder "Converted_Archive")
 - The subfolder hierarchy within the mirror structure matches the source exactly
 - Each located Locoscript 2 file is converted and saved into the corresponding location in the mirror structure, using the selected output format and the same filename with the new extension added
 - The user selects the output format (TXT, RTF, DOCX) as with normal conversion
 - If the top-level mirror folder already exists, the user is prompted to confirm before proceeding
-- Error handling follows the same rules as batch conversion: failures are logged to DocConvertor-Error.log in the corresponding mirror subfolder, processing continues, and a summary is shown on completion
-- The completion summary should include the time taken, count of files converted, and count of failures
+- Error handling follows the same rules as batch conversion: failures and warnings are logged to `DocConvertor-Error.log` in the application directory, processing continues, and a summary is shown on completion
+- The completion summary should include the time taken, count of files converted, count of failures, and count of warnings (non-DOC files skipped)
 
 ---
 
