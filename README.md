@@ -92,13 +92,27 @@ The converter window will open.
 
 ## Using the application
 
+### Converting individual files
+
 1. **Add files** — Click **Add files…** and select one or more Locoscript 2 documents. These files have no extension.
 2. **Choose output format** — Select **TXT**, **RTF**, or **DOCX** using the radio buttons.
 3. **Convert** — Click **Convert**. Converted files are saved in the same folder as the originals, with the chosen extension added.
 
 If a converted file already exists you will be asked whether to overwrite it. When converting multiple files you can choose to overwrite or skip all without being asked again for each one.
 
-A summary message is shown when conversion finishes. If any files fail, the error details are written to `DocConvertor-Error.log` in the same folder as the source file.
+A summary message is shown when conversion finishes. If any files fail, the error details are written to `DocConvertor-Error.log` in the application folder.
+
+### Shadow Copy mode
+
+Shadow Copy mode converts an entire folder of Locoscript 2 files in one operation, preserving the original folder structure.
+
+1. **Choose output format** — Select **TXT**, **RTF**, or **DOCX** using the radio buttons.
+2. **Shadow Copy Directory…** — Click the button and select the source folder.
+3. The application scans the folder recursively. Files identified as Locoscript 2 documents (by their `DOC` magic bytes, regardless of file extension) are converted. All other files are skipped and logged as warnings.
+4. Converted files are written to a new folder at the same level as the source, named `Converted_<SourceFolderName>` (e.g. source folder `Archive` → output folder `Converted_Archive`). The subfolder hierarchy mirrors the source exactly, and each file keeps its original name with the chosen extension added.
+5. If the output folder already exists you will be prompted to confirm before proceeding.
+
+A summary message is shown on completion, including the number of files converted, any failures, and a count of non-Locoscript files that were skipped. Full error details are written to `DocConvertor-Error.log` in the application folder.
 
 ---
 
