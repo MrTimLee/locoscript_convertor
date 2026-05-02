@@ -2364,18 +2364,19 @@ class TestPageBreakPropagation(unittest.TestCase):
         self.assertTrue(contents_para.page_break_before,
                         "page_break_before must propagate through an empty para flush")
 
-    def test_22_prefix_structural_b5_07_no_page_break(self):
-        """In 22-prefix files, B3>=0x80 B4=0x0e blocks with B5=0x07 are structural
-        section headers (e.g. 22 61 0b c4 0e 07 03) and must NOT set page_break_before."""
-        # structural header: B3=0xc4 (>=0x80), B4=0x0e → not a page-break block
+    def test_22_prefix_structural_b5_07_sets_page_break(self):
+        """In all prefix variants, B3>=0x80 B4=0x0e B5=0x07 B6=0x03 is a page-break
+        block (e.g. 22 61 0b c4 0e 07 03) and MUST set page_break_before on the
+        following paragraph. Confirmed in HENCOTES (7 such blocks, all genuine section
+        starts). Previously scoped to ctrl_byte!=0x61 — that restriction was wrong."""
         struct_hdr = bytes([0x22, 0x61, 0x0b, 0xc4, 0x0e, 0x07, 0x03, 0x00])
         anchor = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
         body = struct_hdr + anchor + b'Content\x13\x04\x50'
         data = _doc(body)
         doc = parse(data)
         content = [p for p in doc.paragraphs if p.plain_text().strip()]
-        self.assertFalse(content[0].page_break_before,
-                         "structural section header must not set page_break_before")
+        self.assertTrue(content[0].page_break_before,
+                        "structural 07 03 block must set page_break_before")
 
     # --- Trailing indent threshold ---
 

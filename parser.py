@@ -451,6 +451,15 @@ def _skip_ctrl_sequence(data: bytes, i: int, ctrl_byte: int = 0x61,
             # or Contents Page paragraph separator).  Skip 7 bytes and leave the
             # 0f for the main loop to handle.
             i += 7
+        elif (i + 8 < n and data[i+7] in (0x08, 0x09) and data[i+8] in _FMT_TYPES
+              and data[i+6] != data[i+7]):
+            # Inline formatting code (bold/underline/italic/super/sub) at B7 —
+            # skip 7 bytes and leave 08/09 XX for the main loop to handle.
+            # Guard: B6 != B7 excludes SOH doubled-pairs (01 XX XX at B5-B7 where
+            # B6=B7=XX) which are structural metadata not formatting codes.
+            # Confirmed: 08 00 (bold-on) at B7 in HENCOTES year-number entries
+            # (all have B5=B6=0x02, B7=0x08 — B6 != B7).
+            i += 7
         elif i + 8 < n and data[i+7] == 0x13 and data[i+8] == 0x04:
             # 13 04 formatting sequence falls at offset 7-8 (one later than case 1);
             # skip 7 bytes and let the main loop handle the 13 04 xx sequence.
@@ -954,10 +963,10 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                         # on the next paragraph.  The preceding per-page label
                         # (if any) was already discarded by the 0f 02 lookahead
                         # handler; this just handles the page-break side.
-                        # Scoped to ctrl_byte != 0x61: standard 22 61 files use
-                        # 0e 01/0e 02 for page breaks and their structural blocks
-                        # (c4 0e 07 03) must NOT trigger a page break here.
-                        if (_is_structural_hdr and ctrl_byte != 0x61 and i + 6 < n
+                        # Applies to all ctrl_byte variants: 22 61 files (e.g.
+                        # HENCOTES) also use c4 0e 07 03 structural page breaks
+                        # alongside 0e 01/0e 02 breaks.
+                        if (_is_structural_hdr and i + 6 < n
                                 and data[i + 5] == 0x07 and data[i + 6] == 0x03):
                             flush_run()
                             flush_para()
