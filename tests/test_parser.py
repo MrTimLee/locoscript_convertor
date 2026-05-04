@@ -3200,5 +3200,61 @@ class TestSpaceBefore(unittest.TestCase):
         self.assertIn(r'\pard\par', rtf)
 
 
+class TestMixedCtrlByte(unittest.TestCase):
+    """Files where the dominant ctrl_byte is not 0x61 but genuine 22 61 0b body
+    paragraphs also exist.  Two sub-cases:
+      - Secondary after body_start (SCHOOLS2.07 pattern): without fix, 22 61 0b
+        is read as literal '"a' artifacts.
+      - Secondary before primary first_para (SELE pattern): without fix, content
+        in secondary blocks is completely missed.
+    """
+
+    # Primary variant: 22 66 0b is dominant
+    _CTRL_66 = bytes([0x22, 0x66, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+    # Secondary block: 22 61 0b (same params)
+    _CTRL_61 = bytes([0x22, 0x61, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00])
+
+    def test_secondary_after_body_start_no_artifact(self):
+        # SCHOOLS2.07 case: secondary 22 61 0b appears AFTER the primary body
+        # start.  Without fix the bytes 22 61 are treated as printable '"a'.
+        data = (
+            b'DOC'
+            + self._CTRL_66          # primary block 1 at offset 3
+            + self._CTRL_66          # primary block 2 at offset 11 — makes 0x66 dominant
+            + b'First'
+            + self._CTRL_61          # secondary block
+            + b'Second'
+        )
+        text = _plain(data)
+        self.assertNotIn('"a', text)
+        self.assertIn('First', text)
+        self.assertIn('Second', text)
+
+    def test_secondary_before_primary_content_captured(self):
+        # SELE case: secondary 22 61 0b appears BEFORE the primary ctrl_byte's
+        # first_para.  Without fix, content in the secondary blocks is entirely
+        # missed because the parse loop starts at the primary first_para.
+        data = (
+            b'DOC'
+            + self._CTRL_61          # secondary block at offset 3
+            + b'Early'
+            + self._CTRL_66          # primary block 1
+            + b'Mid'
+            + self._CTRL_66          # primary block 2
+            + self._CTRL_66          # primary block 3 — makes 0x66 dominant (3 vs 1)
+            + b'Late'
+        )
+        text = _plain(data)
+        self.assertIn('Early', text)
+        self.assertIn('Mid', text)
+        self.assertIn('Late', text)
+
+    def test_standard_22_61_file_secondary_handler_inactive(self):
+        # Standard 22 61 files: secondary_ctrl_bytes is empty; the secondary
+        # handler must not activate and existing output must be unchanged.
+        data = _doc(b'Hello\x02world')
+        self.assertEqual(_plain(data), 'Hello world')
+
+
 if __name__ == '__main__':
     unittest.main()

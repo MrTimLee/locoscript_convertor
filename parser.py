@@ -561,6 +561,8 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         first_para = 3
 
     prebody_ctrl_byte = 0  # ctrl byte of the pre-body 22 XX zone in 1e-prefix files
+    secondary_ctrl_bytes: frozenset[int] = frozenset()
+    secondary_body_starts: dict[int, int] = {}
     if _prebody_end > 0:
         # Pre-body zone parse: no body exists in this slice — every block is
         # header/footer content.  Setting body_start = _prebody_end (== n)
@@ -588,6 +590,20 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
         current_section = 'body'
         footer_start = 0
     else:
+        _sec_found: set[int] = set()
+        for _j in range(len(data) - 2):
+            if data[_j] == 0x22 and data[_j + 2] == 0x0b:
+                _xx = data[_j + 1]
+                if _xx != ctrl_byte:
+                    _sec_found.add(_xx)
+        if _sec_found:
+            secondary_ctrl_bytes = frozenset(_sec_found)
+            for _sec_ctrl in secondary_ctrl_bytes:
+                _sec_first = _find_content_start(data, _sec_ctrl, prefix_byte)
+                if _sec_first < first_para:
+                    first_para = _sec_first
+                secondary_body_starts[_sec_ctrl] = _find_body_start(
+                    data, _sec_ctrl, _sec_first, initial_section, prefix_byte)
         body_start   = _find_body_start(data, ctrl_byte, first_para, initial_section, prefix_byte)
         footer_start = (_find_footer_start(data, ctrl_byte, first_para, body_start, prefix_byte)
                         if initial_section == 'header' else 0)
@@ -1103,6 +1119,43 @@ def parse(data: bytes, _prebody_end: int = 0) -> Document:
                     current_para.font_size = _pending_large_font
                 if _carry_align_block and current_para.alignment == 'left':
                     current_para.alignment = _last_para_alignment
+            continue
+
+        # --- Secondary ctrl_byte control sequence: PP sec_ctrl XX ---
+        if (secondary_ctrl_bytes
+                and i + 1 < n
+                and data[i] == prefix_byte
+                and data[i + 1] in secondary_ctrl_bytes):
+            sec_ctrl = data[i + 1]
+            ctrl_type_sec = data[i + 2] if i + 2 < n else 0
+            if ctrl_type_sec in (WORD_SEP, 0x06):
+                if prefix_byte == 0x22:
+                    current_text.append(chr(prefix_byte))
+                    current_text.append(chr(sec_ctrl))
+                i += 2
+            elif ctrl_type_sec == 0x0b:
+                _sec_body_start = secondary_body_starts.get(sec_ctrl, body_start)
+                if i >= _sec_body_start:
+                    current_section = 'body'
+                flush_run()
+                flush_para()
+                i = _skip_ctrl_sequence(data, i, sec_ctrl, prefix_byte)
+                if i + 3 < n and data[i] == 0x00 and data[i + 1] == 0x01 and data[i + 2] == data[i + 3] and data[i + 2] >= min_dp:
+                    i += 4
+                elif i + 2 < n and data[i] == 0x01 and data[i + 1] == data[i + 2] and data[i + 1] >= min_dp:
+                    i += 3
+            else:
+                if ctrl_type_sec == sec_ctrl:
+                    # Self-referential (22 sec sec): use a short variable-length skip.
+                    # The long-range "find next 22 sec 0b" skip in _skip_ctrl_sequence
+                    # would consume intervening primary-ctrl_byte body paragraphs.
+                    i += 3
+                    while i < n and data[i] < 0x20 and data[i] != WORD_SEP and data[i] != 0x13:
+                        i += 1
+                    while i + 1 < n and data[i] == data[i + 1] and data[i] >= min_dp:
+                        i += 2
+                else:
+                    i = _skip_ctrl_sequence(data, i, sec_ctrl, prefix_byte)
             continue
 
         # --- Word separator: 02 ---
